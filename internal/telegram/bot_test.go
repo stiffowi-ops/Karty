@@ -290,6 +290,25 @@ func TestLocationsButtonAndLegacyTextOpenCatalog(t *testing.T) {
 	}
 }
 
+func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
+	text := welcomeText(user{FirstName: "Иван"})
+	for _, expected := range []string{
+		"Привет, Иван! 👋",
+		"<b>Не просто точки на карте. Точки роста твоего бизнеса!</b>",
+		"114 локаций с интересными возможностями для открытия и развития бизнеса",
+		"потенциальную аудиторию",
+		"сохраняй лучшие в избранное ⭐",
+		"<b>Найди свою следующую точку роста 👇</b>",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("welcome message is missing %q: %s", expected, text)
+		}
+	}
+	if strings.Contains(text, "Ближайшие точки по геопозиции") || strings.Contains(text, "Я помогу найти станцию") {
+		t.Fatal("outdated greeting text was not removed")
+	}
+}
+
 func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}

@@ -190,7 +190,7 @@ func (b *Bot) welcome(ctx context.Context, chatID int64) error {
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
 const stationPageSize = 10
-remove photo caption budgetfunc stationLabel(title string) string {
+func stationLabel(title string) string {
 	title = strings.TrimSpace(title)
 	if strings.HasPrefix(strings.ToLower(title), "метро ") {
 		return strings.TrimSpace(string([]rune(title)[len([]rune("Метро ")):]))

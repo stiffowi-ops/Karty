@@ -290,8 +290,16 @@ func TestLocationsButtonAndLegacyTextOpenCatalog(t *testing.T) {
 	}
 }
 
+
+func TestWelcomeReflectsActualCatalogSize(t *testing.T) {
+	for _, tc := range []struct{ count int; want string }{{114, "114 локаций"}, {116, "116 локаций"}} {
+		text := welcomeText(user{}, tc.count)
+		if !strings.Contains(text, tc.want) { t.Fatalf("expected %q, got %q", tc.want, text) }
+	}
+}
+
 func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
-	text := welcomeText(user{FirstName: "Иван"})
+	text := welcomeText(user{FirstName: "Иван"}, 114)
 	for _, expected := range []string{
 		"Привет, Иван! 👋",
 		"<b>Не просто точки на карте. Точки роста твоего бизнеса!</b>",
@@ -432,7 +440,7 @@ func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, _ := tr.card["text"].(string)
-	if !strings.Contains(text, "Пока здесь пусто — сохраним первую станцию?") || !strings.Contains(text, "Сохранённые станции появятся здесь") {
+	if !strings.Contains(text, "Пока здесь пусто — сохраним первую локацию?") || !strings.Contains(text, "Сохранённые локации появятся здесь") {
 		t.Fatalf("empty-favorites copy missing: %s", text)
 	}
 	markup, _ := tr.card["reply_markup"].(map[string]any)
@@ -445,10 +453,10 @@ func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
 }
 
 func TestWelcomeTextFallsBackWithoutNameAndEscapesTelegramHTML(t *testing.T) {
-	if got := welcomeText(user{}); !strings.HasPrefix(got, "Привет! 👋") {
+	if got := welcomeText(user{}, 114); !strings.HasPrefix(got, "Привет! 👋") {
 		t.Fatalf("missing generic greeting fallback: %q", got)
 	}
-	if got := welcomeText(user{FirstName: "<Иван>"}); !strings.Contains(got, "Привет, &lt;Иван&gt;! 👋") {
+	if got := welcomeText(user{FirstName: "<Иван>"}, 114); !strings.Contains(got, "Привет, &lt;Иван&gt;! 👋") {
 		t.Fatalf("Telegram HTML in user name was not escaped: %q", got)
 	}
 }

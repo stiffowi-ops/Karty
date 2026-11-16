@@ -154,3 +154,33 @@ func TestCuratedCatalogHas114PointsWithDescriptions(t *testing.T) {
 	item, _ := store.Find("114")
 	if item.Traffic != "Моя правка" { t.Fatalf("user override lost: %q", item.Traffic) }
 }
+
+func TestCuratedCatalogRejectsExtraAndDuplicateSavedEntries(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	if err := os.WriteFile(seed, []byte(`[{"id":"001","title":"Метро Остров Мечты"}]`), 0600); err != nil { t.Fatal(err) }
+	store, err := NewWithBundled(filepath.Join(root, "runtime"), seed, filepath.Join(root, "overrides.json"))
+	if err != nil { t.Fatal(err) }
+	if got := len(store.List()); got != 114 { t.Fatalf("expected curated 114, got %d", got) }
+
+	lat := 55.7
+	extras := []Location{
+		{ID:"001", Title:"Старое название", Filename:"001.png", ImageExt:".png", MapURL:"https://yandex.ru/maps/test", Latitude:&lat},
+		{ID:"001", Title:"Дубль старой записи"},
+		{ID:"115", Title:"Дзержинский"},
+		{ID:"116", Title:"Подрезково"},
+	}
+	if err := store.SaveBase(extras); err != nil { t.Fatal(err) }
+	if err := store.Reload(); err != nil { t.Fatal(err) }
+	if got := len(store.List()); got != 114 { t.Fatalf("old synced entries leaked into the catalog: %d", got) }
+	if _, ok := store.Find("115"); ok { t.Fatal("obsolete location 115 visible") }
+	if _, ok := store.Find("116"); ok { t.Fatal("obsolete location 116 visible") }
+	one, ok := store.Find("001")
+	if !ok || one.Title!="Метро Остров Мечты" || one.MapURL!="https://yandex.ru/maps/test" || one.Latitude==nil || *one.Latitude!=lat || one.Filename!="001.png" {
+		t.Fatalf("approved location lost saved metadata: %+v", one)
+	}
+	if _, ok := store.Find("114"); !ok { t.Fatal("curated location 114 missing") }
+	original, err := store.Base()
+	if err != nil { t.Fatal(err) }
+	if len(original)!=4 { t.Fatalf("saved Docker catalog unexpectedly overwritten: %d",len(original)) }
+}

@@ -132,11 +132,34 @@ func (s *Store) Reload() error {
 	if s.useBundled {
 		defaults, err := bundledLocations()
 		if err != nil { return fmt.Errorf("bundled locations: %w", err) }
-		existing := make(map[string]bool, len(loc))
-		for _, item := range loc { existing[item.ID] = true }
-		for _, item := range defaults {
-			if !existing[item.ID] { loc = append(loc, item) }
+		// Restrict the visible catalog to the 114 curated IDs. An old Docker
+		// volume or a Disk synchronization may contain extra/duplicate records.
+		// Preserve existing metadata for matching approved IDs only.
+		previous := make(map[string]Location, len(loc))
+		for _, entry := range loc {
+			if _, exists := previous[entry.ID]; !exists {
+				previous[entry.ID] = entry
+			}
 		}
+		approved := make([]Location, 0, len(defaults))
+		seen := make(map[string]bool, len(defaults))
+		for _, item := range defaults {
+			if !validID(item.ID) || seen[item.ID] {
+				return fmt.Errorf("invalid or duplicate curated ID %q", item.ID)
+			}
+			seen[item.ID] = true
+			if saved, ok := previous[item.ID]; ok {
+				// Keep photos, coordinates, links and saved fields, but prefer
+				// the approved names and categories over stale synced copies.
+				if saved.Filename == "" { saved.Filename = item.Filename }
+				if saved.ImageExt == "" { saved.ImageExt = item.ImageExt }
+				saved.Title = item.Title
+				saved.Category = item.Category
+				item = saved
+			}
+			approved = append(approved, item)
+		}
+		loc = approved
 	}
 	templates := map[string]Override{}
 	if s.useBundled {

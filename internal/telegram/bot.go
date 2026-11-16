@@ -139,47 +139,47 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 // sendWelcome removes a reply keyboard left by an older version, then attaches
 // the inline start menu to that same welcome message.
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboard any) error {
-	payload := map[string]any{
+	// Remove a persistent reply keyboard in a short-lived message. Telegram rejects
+	// editing that message into an inline keyboard, so send the welcome with its
+	// inline menu attached from the start.
+	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
+		"chat_id": chatID,
+		"text": "·",
+		"disable_notification": true,
+		"reply_markup": map[string]any{"remove_keyboard": true},
+	})
+	resetMessageID := 0
+	if resetErr != nil {
+		log.Printf("Remove old reply keyboard: %v", resetErr)
+	} else {
+		var reset struct {
+			MessageID int `json:"message_id"`
+		}
+		if err := json.Unmarshal(resetRaw, &reset); err != nil {
+			log.Printf("Read reply-keyboard reset message: %v", err)
+		} else {
+			resetMessageID = reset.MessageID
+		}
+	}
+
+	welcomePayload := map[string]any{
 		"chat_id": chatID,
 		"text": text,
 		"parse_mode": "HTML",
 		"link_preview_options": map[string]any{"is_disabled": true},
-		"reply_markup": map[string]any{"remove_keyboard": true},
-	}
-	raw, err := b.call(ctx, "sendMessage", payload)
-	if err != nil {
-		return err
-	}
-	var sent struct {
-		MessageID int `json:"message_id"`
-	}
-	if err := json.Unmarshal(raw, &sent); err != nil {
-		return err
-	}
-	if sent.MessageID == 0 {
-		return fmt.Errorf("Telegram sendMessage returned no message_id")
-	}
-	_, attachErr := b.call(ctx, "editMessageReplyMarkup", map[string]any{
-		"chat_id": chatID,
-		"message_id": sent.MessageID,
 		"reply_markup": keyboard,
-	})
-	if attachErr == nil {
-		return nil
 	}
-
-	// If the client/API rejects adding inline markup after the keyboard-removal
-	// message, send a fresh welcome with its inline keyboard already attached.
-	log.Printf("Attach start menu to message %d: %v; retrying with a new message", sent.MessageID, attachErr)
-	payload["reply_markup"] = keyboard
-	if _, sendErr := b.call(ctx, "sendMessage", payload); sendErr != nil {
-		return fmt.Errorf("attach start menu: %v; fallback send: %w", attachErr, sendErr)
+	if _, err := b.call(ctx, "sendMessage", welcomePayload); err != nil {
+		return err
 	}
-	if _, deleteErr := b.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": sent.MessageID}); deleteErr != nil {
-		log.Printf("Remove temporary welcome message %d: %v", sent.MessageID, deleteErr)
+	if resetMessageID != 0 {
+		if _, err := b.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": resetMessageID}); err != nil {
+			log.Printf("Remove temporary reply-keyboard message %d: %v", resetMessageID, err)
+		}
 	}
 	return nil
 }
+
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }

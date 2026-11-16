@@ -78,28 +78,28 @@ func markup(rows ...[]Button) map[string]any   { return map[string]any{"inline_k
 func menuButton() Button                       { return callbackButton("🏠 Главное меню", "menu") }
 func homeMarkup() any                          { return markup([]Button{menuButton()}) }
 
-// startMenuReplyKeyboard keeps the five main actions visible above the input
-// field. Reply keyboards send text messages, handled by Bot.handle below.
-func startMenuReplyKeyboard() map[string]any {
-	return map[string]any{
-		"keyboard": []any{
-			[]any{map[string]any{"text": "📍 Рядом со мной"}},
-			[]any{map[string]any{"text": "📋 Список станций"}, map[string]any{"text": "🔎 Поиск"}},
-			[]any{map[string]any{"text": "⭐ Избранное"}, map[string]any{"text": "🗺 Открыть карту"}},
-		},
-		"resize_keyboard": true,
-		"is_persistent":   true,
-	}
+// Main navigation uses inline buttons directly under the welcome message.
+// Keep the location action last, spanning the full width of the menu.
+func startMenuMarkup(mapURL string) map[string]any {
+	return markup(
+		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{callbackButton("⭐ Избранное", "favorites"), urlButton("🗺 Открыть карту", mapURL)},
+		[]Button{callbackButton("📍 Рядом со мной", "near")},
+	)
 }
 
-// Telegram only supports request_location on a reply keyboard. Keep the main
-// actions there too, so asking for location never leaves the user without menu.
+// Telegram needs a reply keyboard to expose its native location-sharing button.
+// This temporary keyboard is removed after the user shares a location or
+// returns to the main menu.
 func mainKeyboard() any {
-	keyboard := startMenuReplyKeyboard()
-	rows := keyboard["keyboard"].([]any)
-	locationRow := []any{map[string]any{"text": "📍 Отправить геопозицию", "request_location": true}}
-	keyboard["keyboard"] = append([]any{locationRow}, rows...)
-	return keyboard
+	return map[string]any{
+		"keyboard": []any{
+			[]any{map[string]any{"text": "📍 Отправить геопозицию", "request_location": true}},
+			[]any{map[string]any{"text": "🏠 Главное меню"}},
+		},
+		"resize_keyboard":   true,
+		"one_time_keyboard": true,
+	}
 }
 
 const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
@@ -172,8 +172,36 @@ func welcomeText(sender user) string {
 	return greeting + "\n\nЯ помогу найти станцию, посмотреть её карточку и карту, сохранить интересные варианты в ⭐ «Избранное» и сравнить их.\n\nВыбери действие ниже или просто напиши название станции. Ближайшие точки по геопозиции покажу, если для них заданы координаты."
 }
 
+// An older release installed a persistent reply keyboard. Telegram requires
+// a separate message to remove it before showing inline buttons on the welcome.
+// Send the new welcome with its inline markup already attached, never by editing
+// a message; cleanup of the temporary reset message is best-effort.
 func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
-	return b.Send(ctx, chatID, welcomeText(sender), startMenuReplyKeyboard())
+	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
+		"chat_id":              chatID,
+		"text":                 "·",
+		"disable_notification": true,
+		"reply_markup":         map[string]any{"remove_keyboard": true},
+	})
+	if resetErr != nil {
+		log.Printf("Remove old reply keyboard: %v", resetErr)
+	}
+	if err := b.Send(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL)); err != nil {
+		return err
+	}
+	if resetErr == nil {
+		var resetMessage struct {
+			MessageID int `json:"message_id"`
+		}
+		if err := json.Unmarshal(resetRaw, &resetMessage); err == nil && resetMessage.MessageID > 0 {
+			if _, err := b.call(ctx, "deleteMessage", map[string]any{
+				"chat_id": chatID, "message_id": resetMessage.MessageID,
+			}); err != nil {
+				log.Printf("Remove temporary keyboard reset message: %v", err)
+			}
+		}
+	}
+	return nil
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -784,8 +812,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return nil
 	}
 	if m.Location != nil {
-		// The location-request keyboard is temporary; restore the main menu.
-		if err := b.Send(ctx, m.Chat.ID, "Геопозицию получил.", startMenuReplyKeyboard()); err != nil {
+		// Hide the native location-sharing keyboard; the nearby result has
+		// inline navigation back to the main menu.
+		if err := b.Send(ctx, m.Chat.ID, "Геопозицию получил.", map[string]any{"remove_keyboard": true}); err != nil {
 			return err
 		}
 		return b.showNear(ctx, m.Chat.ID, m.Location)
@@ -808,6 +837,8 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.showFavorites(ctx, chatID, m.From.ID)
 	case "⚖️ Сравнить станции":
 		return b.startComparison(ctx, chatID, m.From.ID, 0)
+	case "🏠 Главное меню":
+		return b.welcome(ctx, chatID, m.From)
 	}
 	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
 	if at := strings.IndexByte(cmd, '@'); at >= 0 {

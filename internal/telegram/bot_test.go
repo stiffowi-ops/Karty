@@ -234,41 +234,58 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	}
 }
 
-func TestStartCommandSendsPersistentMenuWithAllButtons(t *testing.T) {
+func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
-	message := &message{
+	msg := &message{
 		Text: "/start",
 		Chat: chat{ID: 123, Type: "private"},
 		From: user{ID: 456, FirstName: "Иван", LastName: "Иванов"},
 	}
-	if err := b.handle(context.Background(), update{Message: message}); err != nil {
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.payloads) != 1 {
-		t.Fatalf("start must send one welcome without temporary keyboard reset; got %d messages", len(tr.payloads))
+	if len(tr.payloads) != 2 {
+		t.Fatalf("expected temporary keyboard reset and welcome, got %d messages", len(tr.payloads))
 	}
-	welcome := tr.payloads[0]
-	text, ok := welcome["text"].(string)
-	if !ok || !strings.Contains(text, "Привет, Иван Иванов!") {
-		t.Fatalf("personalized greeting missing: %v", welcome["text"])
+	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
+	if reset["remove_keyboard"] != true {
+		t.Fatalf("old persistent keyboard not removed: %+v", reset)
 	}
-	markup, ok := welcome["reply_markup"].(map[string]any)
-	if !ok {
-		t.Fatalf("welcome message has no reply keyboard: %+v", welcome)
+	welcome := tr.payloads[1]
+	welcomeText, _ := welcome["text"].(string)
+	if !strings.Contains(welcomeText, "Привет, Иван Иванов!") {
+		t.Fatalf("personalized welcome missing: %+v", welcome["text"])
 	}
-	if markup["is_persistent"] != true || markup["resize_keyboard"] != true || markup["inline_keyboard"] != nil || markup["remove_keyboard"] != nil {
-		t.Fatalf("expected persistent reply keyboard, got %+v", markup)
+	markup, _ := welcome["reply_markup"].(map[string]any)
+	if markup["keyboard"] != nil || markup["remove_keyboard"] != nil {
+		t.Fatalf("welcome should use inline-only buttons: %+v", markup)
 	}
-	rows, ok := markup["keyboard"].([]any)
+	rows, ok := markup["inline_keyboard"].([]any)
 	if !ok || len(rows) != 3 {
-		t.Fatalf("expected 3 rows of main menu buttons, got %+v", markup["keyboard"])
+		t.Fatalf("expected 3 rows in inline menu: %+v", markup)
 	}
-	keyboard, _ := json.Marshal(markup)
-	for _, value := range []string{"📍 Рядом со мной", "📋 Список станций", "🔎 Поиск", "⭐ Избранное", "🗺 Открыть карту"} {
-		if !strings.Contains(string(keyboard), value) {
-			t.Errorf("start menu button %q missing from reply keyboard: %s", value, keyboard)
+	assertButton := func(row, column int, label, dataType, data string) {
+		t.Helper()
+		buttons, ok := rows[row].([]any)
+		if !ok || column >= len(buttons) {
+			t.Fatalf("missing button at row %d, column %d", row, column)
 		}
+		button, ok := buttons[column].(map[string]any)
+		if !ok || button["text"] != label || button[dataType] != data {
+			t.Fatalf("wrong menu button: %+v", button)
+		}
+	}
+	assertButton(0, 0, "📋 Список станций", "callback_data", "list")
+	assertButton(0, 1, "🔎 Поиск", "callback_data", "search")
+	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
+	assertButton(1, 1, "🗺 Открыть карту", "url", defaultProjectMapURL)
+	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
+	if lastRow, _ := rows[2].([]any); len(lastRow) != 1 {
+		t.Fatalf("nearby button should be alone in last row: %+v", lastRow)
+	}
+	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
+		t.Fatalf("temporary keyboard-reset message not cleaned up: %+v", tr.requests)
 	}
 }
 
@@ -297,9 +314,9 @@ func TestMainMenuMapButtonOpensLink(t *testing.T) {
 	}
 }
 
-func TestLocationRequestKeepsMenuAndLocationAnswerRestoresIt(t *testing.T) {
+func TestLocationRequestAndReplyKeyboardRemoval(t *testing.T) {
 	keyboard, _ := json.Marshal(mainKeyboard())
-	for _, text := range []string{"request_location", "📋 Список станций", "🔎 Поиск", "⭐ Избранное", "🗺 Открыть карту"} {
+	for _, text := range []string{"request_location", "📍 Отправить геопозицию", "🏠 Главное меню", "one_time_keyboard"} {
 		if !strings.Contains(string(keyboard), text) {
 			t.Fatalf("location request lost %q: %s", text, keyboard)
 		}
@@ -320,11 +337,11 @@ func TestLocationRequestKeepsMenuAndLocationAnswerRestoresIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tr.payloads) != 2 {
-		t.Fatalf("expected keyboard restore and nearby results, got %d messages", len(tr.payloads))
+		t.Fatalf("expected keyboard removal and nearby results, got %d messages", len(tr.payloads))
 	}
 	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if markup["is_persistent"] != true || markup["remove_keyboard"] != nil {
-		t.Fatalf("location response must restore persistent main menu, got %+v", markup)
+	if markup["remove_keyboard"] != true {
+		t.Fatalf("location response must hide native keyboard, got %+v", markup)
 	}
 }
 

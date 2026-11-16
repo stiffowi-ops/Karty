@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -150,8 +151,8 @@ func TestStationMapLinksArePerPoint(t *testing.T) {
 	if got := stationMapLink(catalog.Location{MapURL: direct}, base); got != direct {
 		t.Fatalf("exact source link not preferred: %q", got)
 	}
-	if got := stationMapLink(catalog.Location{MapURL: "https://evil.test/steal"}, base); got != "" {
-		t.Fatalf("unsafe url allowed: %q", got)
+	if got := stationMapLink(catalog.Location{MapURL: "https://evil.test/steal"}, base); got != base {
+		t.Fatalf("unsafe station URL should fall back to the validated project map: %q", got)
 	}
 	card := cardForLocation(a, base)
 	if !strings.Contains(card, "Открыть карту") || !strings.Contains(card, "<a href=") {
@@ -171,6 +172,7 @@ func TestCardNavigation(t *testing.T) {
 type captureTransport struct {
 	requests []string
 	card     map[string]any
+	payloads []map[string]any
 }
 
 func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -181,11 +183,14 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	switch req.URL.Path {
 	case "/botTEST/sendMessage":
-		if err = json.Unmarshal(raw, &c.card); err != nil {
+		var payload map[string]any
+		if err = json.Unmarshal(raw, &payload); err != nil {
 			return nil, err
 		}
+		c.card = payload
+		c.payloads = append(c.payloads, payload)
 	}
-	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":100}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 }
 func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	dir := t.TempDir()
@@ -206,7 +211,7 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	tr := &captureTransport{}
 	projectMap := "https://yandex.ru/maps/?um=constructor%3Atest&source=constructorLink"
 	b := &Bot{token: "TEST", mapURL: projectMap, store: store, http: &http.Client{Transport: tr}}
-	if err := b.showLocation(context.Background(), 123, "017", 2); err != nil {
+	if err := b.showLocation(context.Background(), 123, 456, "017", 2); err != nil {
 		t.Fatal(err)
 	}
 	if len(tr.requests) != 1 || tr.requests[0] != "/botTEST/sendMessage" {
@@ -223,6 +228,92 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	keyboardBytes, _ := json.Marshal(kb)
 	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "search") || !strings.Contains(string(keyboardBytes), "menu") {
 		t.Fatalf("missing nav buttons: %s", keyboardBytes)
+	}
+	if !strings.Contains(string(keyboardBytes), "fav:toggle:017:2") || !strings.Contains(string(keyboardBytes), "Добавить в избранное") {
+		t.Fatalf("favorite button missing from station card: %s", keyboardBytes)
+	}
+}
+
+func TestStartCommandSendsPersonalizedWelcomeWithInlineButtons(t *testing.T) {
+	tr := &captureTransport{}
+	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
+	message := &message{
+		Text: "/start",
+		Chat: chat{ID: 123, Type: "private"},
+		From: user{ID: 456, FirstName: "Иван", LastName: "Иванов"},
+	}
+	if err := b.handle(context.Background(), update{Message: message}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.payloads) != 2 {
+		t.Fatalf("expected temporary keyboard reset and welcome messages, got %d", len(tr.payloads))
+	}
+	welcome := tr.payloads[1]
+	text, ok := welcome["text"].(string)
+	if !ok || !strings.Contains(text, "Привет, Иван Иванов!") {
+		t.Fatalf("personalized greeting missing: %v", welcome["text"])
+	}
+	markup, ok := welcome["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("welcome message has no inline keyboard: %+v", welcome)
+	}
+	keyboard, _ := json.Marshal(markup)
+	for _, value := range []string{"near", "list", "search", "favorites", "Открыть карту"} {
+		if !strings.Contains(string(keyboard), value) {
+			t.Errorf("start menu button %q missing from inline keyboard: %s", value, keyboard)
+		}
+	}
+}
+
+func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
+	dir := t.TempDir()
+	favorites, err := openFavoriteStore(filepath.Join(dir, "favorites.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &captureTransport{}
+	b := &Bot{token: "TEST", favorites: favorites, http: &http.Client{Transport: tr}}
+	if err := b.showFavorites(context.Background(), 123, 456); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := tr.card["text"].(string)
+	if !strings.Contains(text, "Пока здесь пусто — сохраним первую станцию?") || !strings.Contains(text, "Сохранённые станции появятся здесь") {
+		t.Fatalf("empty-favorites copy missing: %s", text)
+	}
+	markup, _ := tr.card["reply_markup"].(map[string]any)
+	keyboard, _ := json.Marshal(markup)
+	for _, value := range []string{"list", "search", "menu"} {
+		if !strings.Contains(string(keyboard), value) {
+			t.Errorf("empty favorites shortcut %q missing: %s", value, keyboard)
+		}
+	}
+}
+
+func TestWelcomeTextFallsBackWithoutNameAndEscapesTelegramHTML(t *testing.T) {
+	if got := welcomeText(user{}); !strings.HasPrefix(got, "Привет! 👋") {
+		t.Fatalf("missing generic greeting fallback: %q", got)
+	}
+	if got := welcomeText(user{FirstName: "<Иван>"}); !strings.Contains(got, "Привет, &lt;Иван&gt;! 👋") {
+		t.Fatalf("Telegram HTML in user name was not escaped: %q", got)
+	}
+}
+
+func TestComparisonSelectionTogglesAndCapsAtThree(t *testing.T) {
+	b := &Bot{}
+	for i, id := range []string{"001", "002", "003"} {
+		count, full := b.toggleComparisonSelection(456, id)
+		if full || count != i+1 {
+			t.Fatalf("selection %s: count=%d full=%v", id, count, full)
+		}
+	}
+	if count, full := b.toggleComparisonSelection(456, "004"); !full || count != 3 {
+		t.Fatalf("fourth station should be rejected: count=%d full=%v", count, full)
+	}
+	if count, full := b.toggleComparisonSelection(456, "002"); full || count != 2 {
+		t.Fatalf("toggling a selected station should remove it: count=%d full=%v", count, full)
+	}
+	if got := b.comparisonSelection(456); !reflect.DeepEqual(got, []string{"001", "003"}) {
+		t.Fatalf("unexpected comparison selection: %v", got)
 	}
 }
 func TestCardEmojiFitsTelegramLimit(t *testing.T) {

@@ -95,7 +95,10 @@ func main() {
 			}
 		}()
 	}
-	bot := telegram.New(token, env("MAP_CONSTRUCTOR_ID", "4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0"), dataDir, store, syncService, os.Getenv("ADMIN_IDS"))
+	bot, err := telegram.New(token, env("MAP_CONSTRUCTOR_ID", "4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0"), dataDir, store, syncService, os.Getenv("ADMIN_IDS"))
+	if err != nil {
+		log.Fatalf("Bot initialization: %v", err)
+	}
 	if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}

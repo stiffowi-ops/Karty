@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -26,12 +27,17 @@ import (
 type Bot struct {
 	token, mapURL, offsetFile string
 	store                     *catalog.Store
+	favorites                 *favoriteStore
 	syncer                    *syncer.Syncer
 	adminIDs                  map[int64]bool
 	http                      *http.Client
+	compareMu                 sync.Mutex
+	compareSelections         map[int64][]string
 }
 type user struct {
-	ID int64 `json:"id"`
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 }
 type chat struct {
 	ID   int64  `json:"id"`
@@ -84,12 +90,13 @@ func startMenuMarkup(mapURL string) any {
 	return markup(
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
-		[]Button{urlButton("🗺 Открыть карту", mapURL)},
+		[]Button{callbackButton("⭐ Избранное", "favorites"), urlButton("🗺 Открыть карту", mapURL)},
 	)
 }
+
 const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
 
-func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.Syncer, admins string) *Bot {
+func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.Syncer, admins string) (*Bot, error) {
 	ids := map[int64]bool{}
 	for _, value := range strings.Split(admins, ",") {
 		if id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && id > 0 {
@@ -100,7 +107,16 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 	if constructorID = strings.TrimSpace(constructorID); constructorID != "" {
 		mapURL = "https://yandex.ru/maps/?um=" + url.QueryEscape("constructor:"+constructorID) + "&source=constructorLink"
 	}
-	return &Bot{token: token, mapURL: mapURL, store: store, syncer: sy, adminIDs: ids, http: &http.Client{Timeout: 50 * time.Second}, offsetFile: filepath.Join(dataDir, "telegram-offset.txt")}
+	favorites, err := openFavoriteStore(filepath.Join(dataDir, "favorites.json"))
+	if err != nil {
+		return nil, err
+	}
+	return &Bot{
+		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
+		adminIDs: ids, http: &http.Client{Timeout: 50 * time.Second},
+		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
+		compareSelections: make(map[int64][]string),
+	}, nil
 }
 func (b *Bot) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
 	raw, err := json.Marshal(payload)
@@ -136,17 +152,17 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 	return err
 }
 
-// sendWelcome removes a reply keyboard left by an older version, then attaches
-// the inline start menu to that same welcome message.
+// sendWelcome removes a reply keyboard left by an older version, then sends the
+// welcome text with its inline menu attached from the start.
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboard any) error {
 	// Remove a persistent reply keyboard in a short-lived message. Telegram rejects
 	// editing that message into an inline keyboard, so send the welcome with its
 	// inline menu attached from the start.
 	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
-		"chat_id": chatID,
-		"text": "·",
+		"chat_id":              chatID,
+		"text":                 "·",
 		"disable_notification": true,
-		"reply_markup": map[string]any{"remove_keyboard": true},
+		"reply_markup":         map[string]any{"remove_keyboard": true},
 	})
 	resetMessageID := 0
 	if resetErr != nil {
@@ -163,11 +179,11 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboa
 	}
 
 	welcomePayload := map[string]any{
-		"chat_id": chatID,
-		"text": text,
-		"parse_mode": "HTML",
+		"chat_id":              chatID,
+		"text":                 text,
+		"parse_mode":           "HTML",
 		"link_preview_options": map[string]any{"is_disabled": true},
-		"reply_markup": keyboard,
+		"reply_markup":         keyboard,
 	}
 	if _, err := b.call(ctx, "sendMessage", welcomePayload); err != nil {
 		return err
@@ -183,13 +199,23 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboa
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }
-func (b *Bot) welcome(ctx context.Context, chatID int64) error {
-	msg := "<b>Карта локаций</b> 🚇\n\nВыбери станцию по названию или отправь геопозицию — я покажу ближайшие объекты проекта, если для них заданы координаты. При выборе станции пришлю партнёрскую карточку с четырьмя разделами и ссылкой на карту.\n\nНажми <b>📍 Рядом со мной</b> под этим сообщением, чтобы отправить геопозицию. Также можно отправить точку вручную.\n\nПоиск: просто напиши название станции."
+func welcomeText(sender user) string {
+	name := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(sender.FirstName), strings.TrimSpace(sender.LastName)}, " "))
+	greeting := "Привет! 👋"
+	if name != "" {
+		greeting = "Привет, " + html.EscapeString(name) + "! 👋"
+	}
+	return greeting + "\n\nЯ помогу найти станцию, посмотреть её карточку и карту, сохранить интересные варианты в ⭐ «Избранное» и сравнить их.\n\nВыбери действие ниже или просто напиши название станции. Ближайшие точки по геопозиции покажу, если для них заданы координаты."
+}
+
+func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
+	msg := welcomeText(sender)
 	return b.sendWelcome(ctx, chatID, msg, startMenuMarkup(b.mapURL))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
 const stationPageSize = 10
+
 func stationLabel(title string) string {
 	title = strings.TrimSpace(title)
 	if strings.HasPrefix(strings.ToLower(title), "метро ") {
@@ -360,6 +386,7 @@ func stationMapLink(l catalog.Location, originalLayerURL string) string {
 	layer.RawQuery = q.Encode()
 	return layer.String()
 }
+
 // cardField renders a safe, consistent placeholder for the 39 not-yet-filled
 // partner cards. It never asserts facts about an unverified station.
 func cardField(s string) string {
@@ -433,13 +460,230 @@ func (b *Bot) requestStationSearch(ctx context.Context, chatID int64) error {
 	))
 }
 
-func (b *Bot) showLocation(ctx context.Context, chatID int64, id string, backPage int) error {
+func (b *Bot) showLocation(ctx context.Context, chatID, userID int64, id string, backPage int) error {
 	l, found := b.store.Find(id)
 	if !found {
 		return b.Send(ctx, chatID, "Станция не найдена. Открой список станций.", markup(locationBackRows(backPage)...))
 	}
 	card := cardForLocation(l, b.mapURL)
-	return b.Send(ctx, chatID, card, markup(locationBackRows(backPage)...))
+	favoriteLabel := "⭐ Добавить в избранное"
+	if b.favorites.Contains(userID, id) {
+		favoriteLabel = "✅ Убрать из избранного"
+	}
+	rows := append([][]Button{{callbackButton(favoriteLabel, fmt.Sprintf("fav:toggle:%s:%d", id, backPage))}}, locationBackRows(backPage)...)
+	return b.Send(ctx, chatID, card, markup(rows...))
+}
+
+func (b *Bot) favoriteLocations(userID int64) []catalog.Location {
+	items := make([]catalog.Location, 0)
+	for _, id := range b.favorites.IDs(userID) {
+		if item, ok := b.store.Find(id); ok {
+			items = append(items, item)
+		}
+	}
+	return sortedStations(items)
+}
+
+func (b *Bot) showFavorites(ctx context.Context, chatID, userID int64) error {
+	items := b.favoriteLocations(userID)
+	if len(items) == 0 {
+		text := "⭐ <b>Избранное</b>\n\nПока здесь пусто — сохраним первую станцию? 🙂\n\nОткрой список, выбери интересное место и нажми «⭐ Добавить в избранное» в карточке станции. Сохранённые станции появятся здесь — к ним можно будет вернуться или сравнить варианты."
+		return b.Send(ctx, chatID, text, markup(
+			[]Button{callbackButton("📋 Выбрать станцию", "list")},
+			[]Button{callbackButton("🔎 Найти станцию", "search")},
+			[]Button{menuButton()},
+		))
+	}
+	rows := make([][]Button, 0, len(items)+3)
+	for _, item := range items {
+		rows = append(rows, []Button{
+			callbackButton("🚇 "+buttonLabel(item.Title), "loc:"+item.ID),
+			callbackButton("✖️ Убрать", "fav:remove:"+item.ID),
+		})
+	}
+	rows = append(rows,
+		[]Button{callbackButton("⚖️ Сравнить станции", "compare:start")},
+		[]Button{callbackButton("📋 Добавить станцию", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{menuButton()},
+	)
+	text := fmt.Sprintf("⭐ <b>Избранное</b> · %d\n\nОткрой станцию, убери её из списка или выбери несколько для сравнения.", len(items))
+	return b.Send(ctx, chatID, text, markup(rows...))
+}
+
+func (b *Bot) comparisonSelection(userID int64) []string {
+	b.compareMu.Lock()
+	defer b.compareMu.Unlock()
+	return append([]string(nil), b.compareSelections[userID]...)
+}
+
+func (b *Bot) clearComparisonSelection(userID int64) {
+	b.compareMu.Lock()
+	defer b.compareMu.Unlock()
+	delete(b.compareSelections, userID)
+}
+
+func (b *Bot) removeComparisonSelection(userID int64, stationID string) {
+	b.compareMu.Lock()
+	defer b.compareMu.Unlock()
+	selected := b.compareSelections[userID]
+	next := make([]string, 0, len(selected))
+	for _, id := range selected {
+		if id != stationID {
+			next = append(next, id)
+		}
+	}
+	if len(next) == 0 {
+		delete(b.compareSelections, userID)
+	} else {
+		b.compareSelections[userID] = next
+	}
+}
+
+// toggleComparisonSelection returns the current count and whether the new ID
+// was rejected because the three-station limit had already been reached.
+func (b *Bot) toggleComparisonSelection(userID int64, stationID string) (count int, limitReached bool) {
+	b.compareMu.Lock()
+	defer b.compareMu.Unlock()
+	if b.compareSelections == nil {
+		b.compareSelections = make(map[int64][]string)
+	}
+	selected := b.compareSelections[userID]
+	for i, id := range selected {
+		if id == stationID {
+			selected = append(selected[:i], selected[i+1:]...)
+			if len(selected) == 0 {
+				delete(b.compareSelections, userID)
+			} else {
+				b.compareSelections[userID] = selected
+			}
+			return len(selected), false
+		}
+	}
+	if len(selected) >= 3 {
+		return len(selected), true
+	}
+	b.compareSelections[userID] = append(selected, stationID)
+	return len(selected) + 1, false
+}
+
+func (b *Bot) editTextOrSend(ctx context.Context, chatID int64, messageID int, text string, keyboard any) error {
+	if messageID != 0 {
+		_, err := b.call(ctx, "editMessageText", map[string]any{
+			"chat_id": chatID, "message_id": messageID, "text": text,
+			"parse_mode": "HTML", "link_preview_options": map[string]any{"is_disabled": true},
+			"reply_markup": keyboard,
+		})
+		if err == nil {
+			return nil
+		}
+		log.Printf("Refresh comparison picker message %d: %v; sending a new message", messageID, err)
+	}
+	return b.Send(ctx, chatID, text, keyboard)
+}
+
+func (b *Bot) showComparePicker(ctx context.Context, chatID, userID int64, messageID int, notice string) error {
+	items := b.favoriteLocations(userID)
+	if len(items) < 2 {
+		return b.Send(ctx, chatID, "Чтобы сравнить станции, сначала добавь в избранное хотя бы две.", markup(
+			[]Button{callbackButton("📋 Выбрать станцию", "list"), callbackButton("🔎 Найти станцию", "search")},
+			[]Button{callbackButton("⭐ Избранное", "favorites")},
+			[]Button{menuButton()},
+		))
+	}
+	selected := b.comparisonSelection(userID)
+	selectedSet := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = true
+	}
+	rows := make([][]Button, 0, len(items)+2)
+	for _, item := range items {
+		mark := "▫️ "
+		if selectedSet[item.ID] {
+			mark = "✅ "
+		}
+		rows = append(rows, []Button{callbackButton(mark+buttonLabel(item.Title), "compare:toggle:"+item.ID)})
+	}
+	if len(selected) >= 2 {
+		rows = append(rows, []Button{callbackButton(fmt.Sprintf("⚖️ Сравнить выбранные · %d", len(selected)), "compare:done")})
+	}
+	rows = append(rows, []Button{callbackButton("⬅️ В избранное", "favorites"), menuButton()})
+	text := fmt.Sprintf("⚖️ <b>Сравнение станций</b>\n\nВыбери 2–3 станции из избранного. Отмечено: %d/3.", len(selected))
+	if notice != "" {
+		text += "\n\n" + html.EscapeString(notice)
+	}
+	return b.editTextOrSend(ctx, chatID, messageID, text, markup(rows...))
+}
+
+func compareField(label, value string) string {
+	if strings.TrimSpace(value) == "" {
+		value = "Информация пока не добавлена."
+	}
+	return label + html.EscapeString(limitCaptionUnits(strings.TrimSpace(value), 120))
+}
+
+func comparisonText(items []catalog.Location) string {
+	var lines []string
+	lines = append(lines, "⚖️ <b>Сравнение станций</b>")
+	for i, item := range items {
+		traffic := item.Traffic
+		if strings.TrimSpace(traffic) == "" {
+			traffic = item.Description
+		}
+		status := strings.TrimSpace(item.LineStatus)
+		if status == "" {
+			status = "Пока не указан."
+		}
+		landmark := strings.TrimSpace(item.Landmarks)
+		if landmark == "" {
+			landmark = "Пока не указан."
+		}
+		lines = append(lines,
+			"",
+			fmt.Sprintf("<b>%d. 🚇 %s</b>", i+1, html.EscapeString(limitCaptionUnits(item.Title, 100))),
+			compareField("🚇 Линия и статус: ", status),
+			compareField("📍 Ориентир: ", landmark),
+			compareField("🚶 Трафик: ", traffic),
+			compareField("👥 Кто платит: ", item.Payers),
+			compareField("📈 Возможность: ", item.Opportunity),
+			compareField("🎯 Почему здесь: ", item.Conclusion),
+		)
+	}
+	lines = append(lines, "", "Нажми на станцию ниже, чтобы открыть её карточку и карту.")
+	return strings.Join(lines, "\n")
+}
+
+func (b *Bot) finishComparison(ctx context.Context, chatID, userID int64) error {
+	selected := b.comparisonSelection(userID)
+	if len(selected) < 2 || len(selected) > 3 {
+		return b.showComparePicker(ctx, chatID, userID, 0, "Выбери минимум две станции, чтобы сравнить варианты.")
+	}
+	items := make([]catalog.Location, 0, len(selected))
+	for _, id := range selected {
+		if !b.favorites.Contains(userID, id) {
+			continue
+		}
+		if item, ok := b.store.Find(id); ok {
+			items = append(items, item)
+		}
+	}
+	b.clearComparisonSelection(userID)
+	if len(items) < 2 {
+		return b.showFavorites(ctx, chatID, userID)
+	}
+	rows := make([][]Button, 0, len(items)+1)
+	for _, item := range items {
+		rows = append(rows, []Button{callbackButton("🚇 "+buttonLabel(item.Title), "loc:"+item.ID)})
+	}
+	rows = append(rows, []Button{callbackButton("⭐ Избранное", "favorites"), menuButton()})
+	return b.Send(ctx, chatID, comparisonText(items), markup(rows...))
+}
+
+func (b *Bot) startComparison(ctx context.Context, chatID, userID int64, messageID int) error {
+	if len(b.favoriteLocations(userID)) < 2 {
+		return b.showComparePicker(ctx, chatID, userID, 0, "")
+	}
+	b.clearComparisonSelection(userID)
+	return b.showComparePicker(ctx, chatID, userID, messageID, "")
 }
 
 type Nearby struct {
@@ -508,7 +752,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		}
 		switch {
 		case u.Callback.Data == "menu":
-			return b.welcome(ctx, chatID)
+			return b.welcome(ctx, chatID, u.Callback.From)
 		case u.Callback.Data == "near":
 			return b.requestLocation(ctx, chatID)
 		case u.Callback.Data == "list":
@@ -524,10 +768,51 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			if len(parts) > 1 {
 				page, _ = strconv.Atoi(parts[1])
 			}
-			return b.showLocation(ctx, chatID, parts[0], page)
+			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
 		case strings.HasPrefix(u.Callback.Data, "page:"):
 			n, _ := strconv.Atoi(strings.TrimPrefix(u.Callback.Data, "page:"))
 			return b.showPage(ctx, chatID, n)
+		case u.Callback.Data == "favorites":
+			return b.showFavorites(ctx, chatID, u.Callback.From.ID)
+		case u.Callback.Data == "compare:start":
+			return b.startComparison(ctx, chatID, u.Callback.From.ID, u.Callback.Message.MessageID)
+		case u.Callback.Data == "compare:done":
+			return b.finishComparison(ctx, chatID, u.Callback.From.ID)
+		case strings.HasPrefix(u.Callback.Data, "compare:toggle:"):
+			stationID := strings.TrimPrefix(u.Callback.Data, "compare:toggle:")
+			if !b.favorites.Contains(u.Callback.From.ID, stationID) {
+				return b.showFavorites(ctx, chatID, u.Callback.From.ID)
+			}
+			_, full := b.toggleComparisonSelection(u.Callback.From.ID, stationID)
+			notice := ""
+			if full {
+				notice = "Можно выбрать не больше трёх станций."
+			}
+			return b.showComparePicker(ctx, chatID, u.Callback.From.ID, u.Callback.Message.MessageID, notice)
+		case strings.HasPrefix(u.Callback.Data, "fav:toggle:"):
+			parts := strings.SplitN(strings.TrimPrefix(u.Callback.Data, "fav:toggle:"), ":", 2)
+			if len(parts) == 0 || parts[0] == "" {
+				return nil
+			}
+			page := 0
+			if len(parts) == 2 {
+				page, _ = strconv.Atoi(parts[1])
+			}
+			added, err := b.favorites.Toggle(u.Callback.From.ID, parts[0])
+			if err != nil {
+				return err
+			}
+			if !added {
+				b.removeComparisonSelection(u.Callback.From.ID, parts[0])
+			}
+			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
+		case strings.HasPrefix(u.Callback.Data, "fav:remove:"):
+			stationID := strings.TrimPrefix(u.Callback.Data, "fav:remove:")
+			if err := b.favorites.Remove(u.Callback.From.ID, stationID); err != nil {
+				return err
+			}
+			b.removeComparisonSelection(u.Callback.From.ID, stationID)
+			return b.showFavorites(ctx, chatID, u.Callback.From.ID)
 		}
 		return nil
 	}
@@ -555,6 +840,10 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.showMap(ctx, chatID)
 	case "📍 Рядом со мной":
 		return b.requestLocation(ctx, chatID)
+	case "⭐ Избранное":
+		return b.showFavorites(ctx, chatID, m.From.ID)
+	case "⚖️ Сравнить станции":
+		return b.startComparison(ctx, chatID, m.From.ID, 0)
 	}
 	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
 	if at := strings.IndexByte(cmd, '@'); at >= 0 {
@@ -562,9 +851,13 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	}
 	switch cmd {
 	case "/start", "/help":
-		return b.welcome(ctx, chatID)
+		return b.welcome(ctx, chatID, m.From)
 	case "/list":
 		return b.showPage(ctx, chatID, 0)
+	case "/favorites":
+		return b.showFavorites(ctx, chatID, m.From.ID)
+	case "/compare":
+		return b.startComparison(ctx, chatID, m.From.ID, 0)
 	case "/near":
 		return b.requestLocation(ctx, chatID)
 	case "/map":
@@ -622,7 +915,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.Send(ctx, chatID, "По запросу <b>"+html.EscapeString(input)+"</b> ничего не найдено. Попробуй часть названия.", nil)
 	}
 	if len(found) == 1 {
-		return b.showLocation(ctx, chatID, found[0].ID, 0)
+		return b.showLocation(ctx, chatID, m.From.ID, found[0].ID, 0)
 	}
 	found = sortedStations(found)
 	rows := [][]Button{}
@@ -647,7 +940,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		return fmt.Errorf("Bot token verification: %w", err)
 	}
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список станций"}, {"command": "near", "description": "Ближайшие станции"}, {"command": "map", "description": "Исходная карта"}, {"command": "id", "description": "Мой Telegram ID"},
+		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список станций"}, {"command": "favorites", "description": "Избранные станции"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие станции"}, {"command": "map", "description": "Исходная карта"}, {"command": "id", "description": "Мой Telegram ID"},
 	}})
 	// Explicitly remove any Mini App menu configured by an older deployment.
 	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})

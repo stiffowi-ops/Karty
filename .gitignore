@@ -1,0 +1,5 @@
+.env
+runtime/
+location-bot
+*.log
+.DS_Store

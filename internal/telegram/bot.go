@@ -78,20 +78,28 @@ func markup(rows ...[]Button) map[string]any   { return map[string]any{"inline_k
 func menuButton() Button                       { return callbackButton("🏠 Главное меню", "menu") }
 func homeMarkup() any                          { return markup([]Button{menuButton()}) }
 
-// mainKeyboard is shown only after "📍 Рядом со мной" is selected from the inline menu.
-// Telegram supports request_location only in a reply keyboard.
-func mainKeyboard() any {
-	return map[string]any{"keyboard": []any{
-		[]any{map[string]any{"text": "📍 Отправить геопозицию", "request_location": true}},
-	}, "resize_keyboard": true, "one_time_keyboard": true}
+// startMenuReplyKeyboard keeps the five main actions visible above the input
+// field. Reply keyboards send text messages, handled by Bot.handle below.
+func startMenuReplyKeyboard() map[string]any {
+	return map[string]any{
+		"keyboard": []any{
+			[]any{map[string]any{"text": "📍 Рядом со мной"}},
+			[]any{map[string]any{"text": "📋 Список станций"}, map[string]any{"text": "🔎 Поиск"}},
+			[]any{map[string]any{"text": "⭐ Избранное"}, map[string]any{"text": "🗺 Открыть карту"}},
+		},
+		"resize_keyboard": true,
+		"is_persistent":   true,
+	}
 }
 
-func startMenuMarkup(mapURL string) any {
-	return markup(
-		[]Button{callbackButton("📍 Рядом со мной", "near")},
-		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
-		[]Button{callbackButton("⭐ Избранное", "favorites"), urlButton("🗺 Открыть карту", mapURL)},
-	)
+// Telegram only supports request_location on a reply keyboard. Keep the main
+// actions there too, so asking for location never leaves the user without menu.
+func mainKeyboard() any {
+	keyboard := startMenuReplyKeyboard()
+	rows := keyboard["keyboard"].([]any)
+	locationRow := []any{map[string]any{"text": "📍 Отправить геопозицию", "request_location": true}}
+	keyboard["keyboard"] = append([]any{locationRow}, rows...)
+	return keyboard
 }
 
 const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
@@ -152,50 +160,6 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 	return err
 }
 
-// sendWelcome removes a reply keyboard left by an older version, then sends the
-// welcome text with its inline menu attached from the start.
-func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboard any) error {
-	// Remove a persistent reply keyboard in a short-lived message. Telegram rejects
-	// editing that message into an inline keyboard, so send the welcome with its
-	// inline menu attached from the start.
-	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
-		"chat_id":              chatID,
-		"text":                 "·",
-		"disable_notification": true,
-		"reply_markup":         map[string]any{"remove_keyboard": true},
-	})
-	resetMessageID := 0
-	if resetErr != nil {
-		log.Printf("Remove old reply keyboard: %v", resetErr)
-	} else {
-		var reset struct {
-			MessageID int `json:"message_id"`
-		}
-		if err := json.Unmarshal(resetRaw, &reset); err != nil {
-			log.Printf("Read reply-keyboard reset message: %v", err)
-		} else {
-			resetMessageID = reset.MessageID
-		}
-	}
-
-	welcomePayload := map[string]any{
-		"chat_id":              chatID,
-		"text":                 text,
-		"parse_mode":           "HTML",
-		"link_preview_options": map[string]any{"is_disabled": true},
-		"reply_markup":         keyboard,
-	}
-	if _, err := b.call(ctx, "sendMessage", welcomePayload); err != nil {
-		return err
-	}
-	if resetMessageID != 0 {
-		if _, err := b.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": resetMessageID}); err != nil {
-			log.Printf("Remove temporary reply-keyboard message %d: %v", resetMessageID, err)
-		}
-	}
-	return nil
-}
-
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }
@@ -209,8 +173,7 @@ func welcomeText(sender user) string {
 }
 
 func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
-	msg := welcomeText(sender)
-	return b.sendWelcome(ctx, chatID, msg, startMenuMarkup(b.mapURL))
+	return b.Send(ctx, chatID, welcomeText(sender), startMenuReplyKeyboard())
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -821,7 +784,8 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return nil
 	}
 	if m.Location != nil {
-		if err := b.Send(ctx, m.Chat.ID, "Геопозицию получил.", map[string]any{"remove_keyboard": true}); err != nil {
+		// The location-request keyboard is temporary; restore the main menu.
+		if err := b.Send(ctx, m.Chat.ID, "Геопозицию получил.", startMenuReplyKeyboard()); err != nil {
 			return err
 		}
 		return b.showNear(ctx, m.Chat.ID, m.Location)

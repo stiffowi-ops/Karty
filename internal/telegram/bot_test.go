@@ -234,7 +234,7 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	}
 }
 
-func TestStartCommandSendsPersonalizedWelcomeWithInlineButtons(t *testing.T) {
+func TestStartCommandSendsPersistentMenuWithAllButtons(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
 	message := &message{
@@ -245,23 +245,86 @@ func TestStartCommandSendsPersonalizedWelcomeWithInlineButtons(t *testing.T) {
 	if err := b.handle(context.Background(), update{Message: message}); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.payloads) != 2 {
-		t.Fatalf("expected temporary keyboard reset and welcome messages, got %d", len(tr.payloads))
+	if len(tr.payloads) != 1 {
+		t.Fatalf("start must send one welcome without temporary keyboard reset; got %d messages", len(tr.payloads))
 	}
-	welcome := tr.payloads[1]
+	welcome := tr.payloads[0]
 	text, ok := welcome["text"].(string)
 	if !ok || !strings.Contains(text, "Привет, Иван Иванов!") {
 		t.Fatalf("personalized greeting missing: %v", welcome["text"])
 	}
 	markup, ok := welcome["reply_markup"].(map[string]any)
 	if !ok {
-		t.Fatalf("welcome message has no inline keyboard: %+v", welcome)
+		t.Fatalf("welcome message has no reply keyboard: %+v", welcome)
+	}
+	if markup["is_persistent"] != true || markup["resize_keyboard"] != true || markup["inline_keyboard"] != nil || markup["remove_keyboard"] != nil {
+		t.Fatalf("expected persistent reply keyboard, got %+v", markup)
+	}
+	rows, ok := markup["keyboard"].([]any)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("expected 3 rows of main menu buttons, got %+v", markup["keyboard"])
 	}
 	keyboard, _ := json.Marshal(markup)
-	for _, value := range []string{"near", "list", "search", "favorites", "Открыть карту"} {
+	for _, value := range []string{"📍 Рядом со мной", "📋 Список станций", "🔎 Поиск", "⭐ Избранное", "🗺 Открыть карту"} {
 		if !strings.Contains(string(keyboard), value) {
-			t.Errorf("start menu button %q missing from inline keyboard: %s", value, keyboard)
+			t.Errorf("start menu button %q missing from reply keyboard: %s", value, keyboard)
 		}
+	}
+}
+
+func TestMainMenuMapButtonOpensLink(t *testing.T) {
+	tr := &captureTransport{}
+	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
+	msg := &message{Text: "🗺 Открыть карту", Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.payloads) != 1 {
+		t.Fatalf("expected one response to map button, got %d", len(tr.payloads))
+	}
+	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
+	rows, _ := markup["inline_keyboard"].([]any)
+	if len(rows) == 0 {
+		t.Fatalf("map button has no URL row: %+v", markup)
+	}
+	row, _ := rows[0].([]any)
+	if len(row) == 0 {
+		t.Fatalf("map button has an empty URL row: %+v", markup)
+	}
+	button, _ := row[0].(map[string]any)
+	if button["url"] != defaultProjectMapURL {
+		t.Fatalf("map button URL incorrect: %+v", button)
+	}
+}
+
+func TestLocationRequestKeepsMenuAndLocationAnswerRestoresIt(t *testing.T) {
+	keyboard, _ := json.Marshal(mainKeyboard())
+	for _, text := range []string{"request_location", "📋 Список станций", "🔎 Поиск", "⭐ Избранное", "🗺 Открыть карту"} {
+		if !strings.Contains(string(keyboard), text) {
+			t.Fatalf("location request lost %q: %s", text, keyboard)
+		}
+	}
+	tr := &captureTransport{}
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "seed.json")
+	if err := os.WriteFile(seed, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := catalog.New(dir, seed, filepath.Join(dir, "overrides.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
+	msg := &message{Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}, Location: &geoPoint{Latitude: 55.75, Longitude: 37.61}}
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.payloads) != 2 {
+		t.Fatalf("expected keyboard restore and nearby results, got %d messages", len(tr.payloads))
+	}
+	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
+	if markup["is_persistent"] != true || markup["remove_keyboard"] != nil {
+		t.Fatalf("location response must restore persistent main menu, got %+v", markup)
 	}
 }
 

@@ -410,7 +410,6 @@ func cardForLocation(l catalog.Location, layerURL string) string {
 	}
 	lines := []string{
 		"🚇 <b>" + html.EscapeString(title) + "</b>",
-		"<b>КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ</b>",
 		"",
 		"🚇 " + html.EscapeString(limitCaptionUnits(lineStatus, 200)),
 		"📍 <b>Ориентир:</b> " + html.EscapeString(limitCaptionUnits(landmark, 310)),

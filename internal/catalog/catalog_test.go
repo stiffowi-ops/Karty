@@ -134,3 +134,23 @@ func TestPartnerDefaultsPreserveUserCustomization(t *testing.T) {
 		t.Fatalf("data lost on reload: %+v", again)
 	}
 }
+
+func TestCuratedCatalogHas114PointsWithDescriptions(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	ov := filepath.Join(root, "overrides.json")
+	if err := os.WriteFile(seed, []byte(`[{"id":"001","title":"Метро Остров Мечты"}]`), 0600); err != nil { t.Fatal(err) }
+	store, err := NewWithBundled(filepath.Join(root, "runtime"), seed, ov)
+	if err != nil { t.Fatal(err) }
+	if got := len(store.List()); got != 114 { t.Fatalf("want 114 points, got %d", got) }
+	for _, item := range store.List() {
+		if item.LineStatus == "" || item.Traffic == "" || item.Payers == "" || item.Opportunity == "" || item.Conclusion == "" {
+			t.Fatalf("incomplete partner card for %q (%s)", item.Title, item.ID)
+		}
+	}
+	if _, ok := store.Find("114"); !ok { t.Fatal("last curated point missing") }
+	if err := os.WriteFile(ov, []byte(`{"114":{"traffic":"Моя правка"}}`), 0600); err != nil { t.Fatal(err) }
+	if err := store.Reload(); err != nil { t.Fatal(err) }
+	item, _ := store.Find("114")
+	if item.Traffic != "Моя правка" { t.Fatalf("user override lost: %q", item.Traffic) }
+}

@@ -52,6 +52,7 @@ type Store struct {
 	mu                              sync.RWMutex
 	locations                       []Location
 	dataDir, seedPath, overridePath string
+	useBundled bool
 }
 
 func New(dataDir, seedPath, overridePath string) (*Store, error) {
@@ -60,6 +61,16 @@ func New(dataDir, seedPath, overridePath string) (*Store, error) {
 		return nil, err
 	}
 	return s, s.Reload()
+}
+
+// NewWithBundled includes the curated 114 locations without losing existing
+// entries and user overrides stored in the runtime volume.
+func NewWithBundled(dataDir, seedPath, overridePath string) (*Store, error) {
+	s, err := New(dataDir, seedPath, overridePath)
+	if err != nil { return nil, err }
+	s.useBundled = true
+	if err = s.Reload(); err != nil { return nil, err }
+	return s, nil
 }
 
 func (s *Store) BasePath() string { return filepath.Join(s.dataDir, "catalog.json") }
@@ -118,15 +129,31 @@ func (s *Store) Reload() error {
 	if err != nil {
 		return err
 	}
+	if s.useBundled {
+		defaults, err := bundledLocations()
+		if err != nil { return fmt.Errorf("bundled locations: %w", err) }
+		existing := make(map[string]bool, len(loc))
+		for _, item := range loc { existing[item.ID] = true }
+		for _, item := range defaults {
+			if !existing[item.ID] { loc = append(loc, item) }
+		}
+	}
 	templates := map[string]Override{}
+	if s.useBundled {
+		templates, err = bundledPartnerCards()
+		if err != nil { return fmt.Errorf("bundled partner cards: %w", err) }
+	}
 	// Shipped partner cards are kept separate from mutable user overrides so
 	// upgrading the bot never wipes locally customized coordinates or texts.
 	partnerPath := filepath.Join(filepath.Dir(s.overridePath), "partner_cards.json")
 	b, err := os.ReadFile(partnerPath)
 	if err == nil {
-		if err = json.Unmarshal(b, &templates); err != nil {
+		// Optional local partner cards override the bundled default by station ID.
+		fileTemplates := map[string]Override{}
+		if err = json.Unmarshal(b, &fileTemplates); err != nil {
 			return fmt.Errorf("invalid partner cards JSON: %w", err)
 		}
+		for id, entry := range fileTemplates { templates[id] = entry }
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

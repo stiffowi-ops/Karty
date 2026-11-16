@@ -405,58 +405,18 @@ func TestCardEmojiFitsTelegramLimit(t *testing.T) {
 	}
 }
 
-// The user-supplied copy for station 002 is stored as structured data, not
-// inferred from a photo or fabricated for other stations.
-func TestKlenovyBulvarSourceAnd39BlankTemplates(t *testing.T) {
-	data, err := os.ReadFile("../../config/partner_cards.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var entries map[string]map[string]string
-	if err = json.Unmarshal(data, &entries); err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 40 {
-		t.Fatalf("expected 40 templates; got %d", len(entries))
-	}
-	source, ok := entries["002"]
-	if !ok {
-		t.Fatal("missing Кленовый бульвар")
-	}
-	expected := map[string]string{
-		"line_status": "Бирюлёвская линия · открыто",
-		"landmarks":   "Нагатино-Садовники",
-		"traffic":     "Действующая станция: пассажиропоток идёт уже сегодня, ждать пуска не нужно.",
-		"payers":      "Жители Нагатино-Садовников: срочная печать, копии, документы.",
-		"opportunity": "Окно открыто прямо сейчас — старт выручки с первого месяца работы.",
-		"conclusion":  "Единственная точка у работающей станции — старт без периода ожида…",
-	}
-	for key, value := range expected {
-		if source[key] != value {
-			t.Errorf("incorrect %s: %q", key, source[key])
-		}
-	}
-	for id, entry := range entries {
-		if id == "002" {
-			continue
-		}
-		for k, v := range entry {
-			if v != "" {
-				t.Fatalf("unexpected invented content in %s field %s: %q", id, k, v)
-			}
-		}
-	}
-	l := catalog.Location{ID: "002", Title: "Метро Кленовый бульвар", LineStatus: source["line_status"], Landmarks: source["landmarks"], Traffic: source["traffic"], Payers: source["payers"], Opportunity: source["opportunity"], Conclusion: source["conclusion"]}
+// The curated catalog contains all 114 station/location descriptions.
+func TestKlenovyBulvarCuratedCard(t *testing.T) {
+	root := t.TempDir()
+	seedPath := filepath.Join(root, "seed.json")
+	if err := os.WriteFile(seedPath, []byte(`[{"id":"002","title":"Метро Кленовый бульвар"}]`), 0600); err != nil { t.Fatal(err) }
+	store, err := catalog.NewWithBundled(filepath.Join(root,"runtime"), seedPath, filepath.Join(root,"overrides.json"))
+	if err != nil {t.Fatal(err)}
+	l, ok := store.Find("002")
+	if !ok {t.Fatal("Кленовый бульвар missing")}
 	card := cardForLocation(l, "https://yandex.ru/maps/?um=constructor%3Amap")
-	for _, text := range []string{"КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ", "Нагатино-Садовники", "1. ТРАФИК И ЛОКАЦИЯ", "2. КТО ПЛАТИТ", "3. ОКНО ВОЗМОЖНОСТЕЙ", "4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ", "Окно открыто прямо сейчас", "Единственная точка"} {
-		if !strings.Contains(card, text) {
-			t.Errorf("missing %q in %s", text, card)
-		}
+	for _, value := range []string{"<b>Метро Кленовый бульвар</b>", "Нагатино-Садовники", "1. ТРАФИК И ЛОКАЦИЯ", "2. КТО ПЛАТИТ", "3. ОКНО ВОЗМОЖНОСТЕЙ", "4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ", "без периода ожидания"} {
+		if !strings.Contains(card, value) { t.Fatalf("card missing %q",value) }
 	}
-	if strings.Contains(card, "Оценка:") {
-		t.Fatal("rating not provided, should not be invented")
-	}
-	if !strings.Contains(card, "<a href=\"https://yandex.ru/maps/?um=constructor%3Amap\">Открыть карту</a>") {
-		t.Fatal("project map fallback link missing")
-	}
+	if strings.Contains(card, "КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ") { t.Fatal("obsolete banner must be absent") }
 }

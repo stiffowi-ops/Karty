@@ -66,7 +66,7 @@ func main() {
 	if err := os.WriteFile(seedPath, seed, 0644); err != nil {
 		log.Fatal(err)
 	}
-	store, err := catalog.New(dataDir, seedPath, overrides)
+	store, err := catalog.NewWithBundled(dataDir, seedPath, overrides)
 	if err != nil {
 		log.Fatalf("Catalog initialization: %v", err)
 	}

@@ -82,7 +82,7 @@ func homeMarkup() any                          { return markup([]Button{menuButt
 // Keep the location action last, spanning the full width of the menu.
 func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
-		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{callbackButton("📋 Список локаций", "list"), callbackButton("🔎 Поиск", "search")},
 		[]Button{callbackButton("⭐ Избранное", "favorites"), urlButton("🗺 Открыть карту", mapURL)},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
@@ -295,7 +295,7 @@ func (b *Bot) showPage(ctx context.Context, chatID int64, page int) error {
 	if page > maxPage {
 		page = maxPage
 	}
-	return b.Send(ctx, chatID, fmt.Sprintf("<b>🚇 Станции от А до Я</b> · %d объектов\nСтраница %d/%d. Выбери станцию:", len(items), page+1, maxPage+1), markup(rows...))
+	return b.Send(ctx, chatID, fmt.Sprintf("<b>📍 Каталог локаций</b>\n\nЗдесь собраны %d точек с подробным описанием и возможностями для бизнеса.\n\nВыбирай интересующую локацию, изучай её преимущества и сохраняй понравившиеся варианты в избранное ⭐\n\n📖 Страница %d из %d", len(items), page+1, maxPage+1), markup(rows...))
 }
 
 // Telegram text messages are limited to 4096 characters; keep the complete
@@ -721,7 +721,7 @@ func (b *Bot) showNear(ctx context.Context, chatID int64, p *geoPoint) error {
 	}
 	near := Nearest(b.store.List(), p.Latitude, p.Longitude, 5)
 	if len(near) == 0 {
-		return b.Send(ctx, chatID, "Пока не могу определить ближайшую станцию: в каталоге ещё нет проверенных координат. Для поиска по геопозиции необходим экспорт точек из исходной карты. Поиск по названию уже работает.", markup([]Button{callbackButton("📋 Список станций", "page:0"), menuButton()}))
+		return b.Send(ctx, chatID, "Пока не могу определить ближайшую станцию: в каталоге ещё нет проверенных координат. Для поиска по геопозиции необходим экспорт точек из исходной карты. Поиск по названию уже работает.", markup([]Button{callbackButton("📋 Список локаций", "page:0"), menuButton()}))
 	}
 	rows := [][]Button{}
 	for i, n := range near {
@@ -824,7 +824,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return nil
 	}
 	switch input {
-	case "📋 Список станций":
+	case "📋 Список локаций", "📋 Список станций":
 		return b.showPage(ctx, chatID, 0)
 	case "🔎 Поиск":
 		return b.requestStationSearch(ctx, chatID)
@@ -934,7 +934,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		return fmt.Errorf("Bot token verification: %w", err)
 	}
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список станций"}, {"command": "favorites", "description": "Избранные станции"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие станции"}, {"command": "map", "description": "Исходная карта"}, {"command": "id", "description": "Мой Telegram ID"},
+		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные станции"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие станции"}, {"command": "map", "description": "Исходная карта"}, {"command": "id", "description": "Мой Telegram ID"},
 	}})
 	// Explicitly remove any Mini App menu configured by an older deployment.
 	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})

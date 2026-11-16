@@ -234,6 +234,62 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	}
 }
 
+
+func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	stations := make([]catalog.Location, 0, 11)
+	for _, id := range []string{"001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011"} {
+		stations = append(stations, catalog.Location{ID: id, Title: "Локация " + id})
+	}
+	raw, err := json.Marshal(stations)
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(seed, raw, 0600); err != nil { t.Fatal(err) }
+	store, err := catalog.New(filepath.Join(root, "runtime"), seed, filepath.Join(root, "overrides.json"))
+	if err != nil { t.Fatal(err) }
+	tr := &captureTransport{}
+	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
+	for _, tc := range []struct{ page int; expected string }{
+		{0, "📖 Страница 1 из 2"},
+		{1, "📖 Страница 2 из 2"},
+		{10, "📖 Страница 2 из 2"},
+		{-1, "📖 Страница 1 из 2"},
+	} {
+		if err := b.showPage(context.Background(), 123, tc.page); err != nil { t.Fatal(err) }
+		text, _ := tr.card["text"].(string)
+		for _, want := range []string{
+			"<b>📍 Каталог локаций</b>",
+			"Здесь собраны 11 точек с подробным описанием и возможностями для бизнеса.",
+			"сохраняй понравившиеся варианты в избранное ⭐",
+			tc.expected,
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("page %d: expected %q in %q", tc.page, want, text)
+			}
+		}
+		if strings.Contains(text, "Станции от А до Я") || strings.Contains(text, "объектов") {
+			t.Fatalf("old dry catalog heading remains: %s", text)
+		}
+	}
+}
+
+func TestLocationsButtonAndLegacyTextOpenCatalog(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	if err := os.WriteFile(seed, []byte(`[{"id":"001","title":"Метро Остров Мечты"}]`), 0600); err != nil { t.Fatal(err) }
+	store, err := catalog.New(filepath.Join(root, "runtime"), seed, filepath.Join(root, "overrides.json"))
+	if err != nil { t.Fatal(err) }
+	tr := &captureTransport{}
+	b := &Bot{token:"TEST", store:store, http:&http.Client{Transport:tr}}
+	for _, label := range []string{"📋 Список локаций", "📋 Список станций"} {
+		msg := &message{Text:label, Chat:chat{ID:123,Type:"private"}, From:user{ID:456}}
+		if err := b.handle(context.Background(), update{Message:msg}); err != nil { t.Fatal(err) }
+		if got, _ := tr.card["text"].(string); !strings.Contains(got,"📍 Каталог локаций") {
+			t.Fatalf("button %q did not open catalog: %v",label,got)
+		}
+	}
+}
+
 func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
@@ -276,7 +332,7 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 			t.Fatalf("wrong menu button: %+v", button)
 		}
 	}
-	assertButton(0, 0, "📋 Список станций", "callback_data", "list")
+	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
 	assertButton(0, 1, "🔎 Поиск", "callback_data", "search")
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
 	assertButton(1, 1, "🗺 Открыть карту", "url", defaultProjectMapURL)

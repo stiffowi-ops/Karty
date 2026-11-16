@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,9 +84,11 @@ func startMenuMarkup(mapURL string) any {
 	return markup(
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
-		[]Button{urlButton("🗺 Общая карта", mapURL)},
+		[]Button{urlButton("🗺 Открыть карту", mapURL)},
 	)
 }
+const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
+
 func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.Syncer, admins string) *Bot {
 	ids := map[int64]bool{}
 	for _, value := range strings.Split(admins, ",") {
@@ -95,7 +96,10 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 			ids[id] = true
 		}
 	}
-	mapURL := "https://yandex.ru/maps/?um=" + url.QueryEscape("constructor:"+constructorID) + "&source=constructorLink"
+	mapURL := defaultProjectMapURL
+	if constructorID = strings.TrimSpace(constructorID); constructorID != "" {
+		mapURL = "https://yandex.ru/maps/?um=" + url.QueryEscape("constructor:"+constructorID) + "&source=constructorLink"
+	}
 	return &Bot{token: token, mapURL: mapURL, store: store, syncer: sy, adminIDs: ids, http: &http.Client{Timeout: 50 * time.Second}, offsetFile: filepath.Join(dataDir, "telegram-offset.txt")}
 }
 func (b *Bot) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
@@ -165,120 +169,14 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboa
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }
-func (b *Bot) sendPhoto(ctx context.Context, chatID int64, loc catalog.Location, caption string, kb any) error {
-	file, err := os.Open(filepath.Join(b.store.DataDir(), "images", loc.ID+loc.ImageExt))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	_ = mw.WriteField("chat_id", strconv.FormatInt(chatID, 10))
-	_ = mw.WriteField("caption", caption)
-	_ = mw.WriteField("parse_mode", "HTML")
-	if kb != nil {
-		raw, _ := json.Marshal(kb)
-		_ = mw.WriteField("reply_markup", string(raw))
-	}
-	part, err := mw.CreateFormFile("photo", loc.ID+loc.ImageExt)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(part, io.LimitReader(file, 11<<20)); err != nil {
-		return err
-	}
-	if err = mw.Close(); err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+b.token+"/sendPhoto", &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	res, err := b.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	var r apiResult
-	if err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&r); err != nil {
-		return err
-	}
-	if !r.OK {
-		return fmt.Errorf("sendPhoto: %s", r.Description)
-	}
-	return nil
-}
-
-// sendPhotoAlbum sends a native Telegram album with three unmodified copies of
-// the existing PNG. Telegram albums cannot carry an inline keyboard; the card
-// with text and navigation is sent as a separate message immediately afterward.
-func (b *Bot) sendPhotoAlbum(ctx context.Context, chatID int64, loc catalog.Location) error {
-	imagePath := filepath.Join(b.store.DataDir(), "images", loc.ID+loc.ImageExt)
-	imageBytes, err := os.ReadFile(imagePath)
-	if err != nil {
-		return err
-	}
-	if len(imageBytes) == 0 || len(imageBytes) > 10<<20 {
-		return fmt.Errorf("invalid photo size: %d bytes", len(imageBytes))
-	}
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	if err = mw.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
-		return err
-	}
-	media := make([]map[string]string, 0, 3)
-	for i := 0; i < 3; i++ {
-		field := fmt.Sprintf("photo%d", i)
-		media = append(media, map[string]string{"type": "photo", "media": "attach://" + field})
-		part, partErr := mw.CreateFormFile(field, fmt.Sprintf("%s-%d%s", loc.ID, i+1, loc.ImageExt))
-		if partErr != nil {
-			return partErr
-		}
-		if _, partErr = part.Write(imageBytes); partErr != nil {
-			return partErr
-		}
-	}
-	rawMedia, err := json.Marshal(media)
-	if err != nil {
-		return err
-	}
-	if err = mw.WriteField("media", string(rawMedia)); err != nil {
-		return err
-	}
-	if err = mw.Close(); err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+b.token+"/sendMediaGroup", &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	res, err := b.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	var result apiResult
-	if err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&result); err != nil {
-		return err
-	}
-	if !result.OK {
-		return fmt.Errorf("sendMediaGroup: %s", result.Description)
-	}
-	return nil
-}
-
 func (b *Bot) welcome(ctx context.Context, chatID int64) error {
-	msg := "<b>Карта локаций</b> 🚇\n\nВыбери станцию по названию или найди ближайшие объекты проекта по своей геопозиции. Я пришлю три фотографии локации и партнёрскую карточку с четырьмя разделами и ссылкой на карту.\n\nНажми <b>📍 Рядом со мной</b> под этим сообщением. Затем Telegram предложит отправить геопозицию — можно поделиться текущей точкой или выбрать её вручную.\n\nПоиск: просто напиши название станции."
+	msg := "<b>Карта локаций</b> 🚇\n\nВыбери станцию по названию или отправь геопозицию — я покажу ближайшие объекты проекта, если для них заданы координаты. При выборе станции пришлю партнёрскую карточку с четырьмя разделами и ссылкой на карту.\n\nНажми <b>📍 Рядом со мной</b> под этим сообщением, чтобы отправить геопозицию. Также можно отправить точку вручную.\n\nПоиск: просто напиши название станции."
 	return b.sendWelcome(ctx, chatID, msg, startMenuMarkup(b.mapURL))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
 const stationPageSize = 10
-const photoCaptionBudget = 900 // conservative UTF-16 budget; Telegram limits photo captions to 1024 characters.
-
-func stationLabel(title string) string {
+remove photo caption budgetfunc stationLabel(title string) string {
 	title = strings.TrimSpace(title)
 	if strings.HasPrefix(strings.ToLower(title), "метро ") {
 		return strings.TrimSpace(string([]rune(title)[len([]rune("Метро ")):]))
@@ -405,42 +303,49 @@ func limitCaptionUnits(s string, maxUnits int) string {
 // stationMapLink never silently redirects a station to the general map.
 // An explicit Yandex link copied from the source project takes priority.
 // Otherwise, verified coordinates center the original Constructor layer and
-// place a pin at the exact coordinate. No data means no individual link.
+// place a pin at the exact coordinate. Without coordinates, use the project map.
+func validatedYandexMapURL(raw string) (*url.URL, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) >= 1500 {
+		return nil, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return nil, false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "yandex.ru" && !strings.HasSuffix(host, ".yandex.ru") && host != "yandex.com" && !strings.HasSuffix(host, ".yandex.com") {
+		return nil, false
+	}
+	return u, true
+}
+
 func stationMapLink(l catalog.Location, originalLayerURL string) string {
-	if direct := strings.TrimSpace(l.MapURL); direct != "" && len(direct) < 1500 {
-		u, err := url.Parse(direct)
-		if err == nil && u.Scheme == "https" && u.User == nil {
-			host := strings.ToLower(u.Hostname())
-			if host == "yandex.ru" || strings.HasSuffix(host, ".yandex.ru") || host == "yandex.com" || strings.HasSuffix(host, ".yandex.com") {
-				return direct
-			}
+	if direct := strings.TrimSpace(l.MapURL); direct != "" {
+		if _, ok := validatedYandexMapURL(direct); ok {
+			return direct
 		}
 	}
-	if l.Latitude == nil || l.Longitude == nil {
+	layer, ok := validatedYandexMapURL(originalLayerURL)
+	if !ok {
 		return ""
+	}
+	if l.Latitude == nil || l.Longitude == nil {
+		return layer.String()
 	}
 	lat, lon := *l.Latitude, *l.Longitude
 	if math.IsNaN(lat) || math.IsNaN(lon) || math.IsInf(lat, 0) || math.IsInf(lon, 0) || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
-		return ""
-	}
-	u, err := url.Parse(originalLayerURL)
-	if err != nil || u.Scheme != "https" {
-		return ""
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "yandex.ru" && host != "yandex.com" {
-		return ""
+		return layer.String()
 	}
 	coordinates := fmt.Sprintf("%.7f,%.7f", lon, lat)
-	q := u.Query()
+	q := layer.Query()
 	q.Set("ll", coordinates)
 	q.Set("pt", coordinates)
 	q.Set("z", "16")
 	q.Set("l", "map")
-	u.RawQuery = q.Encode()
-	return u.String()
+	layer.RawQuery = q.Encode()
+	return layer.String()
 }
-
 // cardField renders a safe, consistent placeholder for the 39 not-yet-filled
 // partner cards. It never asserts facts about an unverified station.
 func cardField(s string) string {
@@ -467,9 +372,9 @@ func cardForLocation(l catalog.Location, layerURL string) string {
 		traffic = l.Description
 	}
 
-	mapLine := "Индивидуальная ссылка появится после привязки координат."
+	mapLine := "Ссылка на карту пока не настроена."
 	if link := stationMapLink(l, layerURL); link != "" {
-		mapLine = `<a href="` + html.EscapeString(link) + `">Открыть точку в Яндекс Картах</a>`
+		mapLine = `<a href="` + html.EscapeString(link) + `">Открыть карту</a>`
 	}
 	lines := []string{
 		"🚇 <b>" + html.EscapeString(title) + "</b>",
@@ -520,19 +425,6 @@ func (b *Bot) showLocation(ctx context.Context, chatID int64, id string, backPag
 		return b.Send(ctx, chatID, "Станция не найдена. Открой список станций.", markup(locationBackRows(backPage)...))
 	}
 	card := cardForLocation(l, b.mapURL)
-	if l.ImageURL != "" {
-		// Album in Telegram, then one full text card below, with clickable links
-		// and navigation. Each album item reuses the exact original PNG bytes.
-		if err := b.sendPhotoAlbum(ctx, chatID, l); err != nil {
-			log.Printf("Album %s: %v (trying single photo)", l.ID, err)
-			if err := b.sendPhoto(ctx, chatID, l, "📸 Фотографии и ориентиры: "+html.EscapeString(l.Title), nil); err != nil {
-				log.Printf("Photo fallback %s: %v", l.ID, err)
-				card += "\n\n<i>Фото временно недоступно.</i>"
-			}
-		}
-	} else {
-		card += "\n\n<i>Фотография появится после синхронизации с Яндекс Диском.</i>"
-	}
 	return b.Send(ctx, chatID, card, markup(locationBackRows(backPage)...))
 }
 
@@ -645,7 +537,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.showPage(ctx, chatID, 0)
 	case "🔎 Поиск":
 		return b.requestStationSearch(ctx, chatID)
-	case "🗺 Общая карта":
+	case "🗺 Открыть карту", "🗺 Общая карта":
 		return b.showMap(ctx, chatID)
 	case "📍 Рядом со мной":
 		return b.requestLocation(ctx, chatID)
@@ -731,7 +623,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	return b.Send(ctx, chatID, fmt.Sprintf("Найдено: %d. Выбери станцию:", len(found)), markup(rows...))
 }
 func (b *Bot) showMap(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "<b>Карта проекта</b> 🗺", markup([]Button{urlButton("Открыть Яндекс Карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
+	return b.Send(ctx, chatID, "<b>Карта проекта</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "Нажми кнопку <b>📍 Отправить геопозицию</b> ниже и разреши Telegram отправить текущую точку. Также можно выбрать точку вручную через меню вложений. Геопозиция не сохраняется в базе.", mainKeyboard())

@@ -1,13 +1,11 @@
 package telegram
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"html"
 	"io"
 	"math"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -122,8 +120,8 @@ func TestCardTextAndHTMLSafety(t *testing.T) {
 	if !strings.Contains(text, "Ориентир") || !strings.Contains(text, "8/10") || !strings.Contains(text, "🚶 <b>1. ТРАФИК И ЛОКАЦИЯ</b>") || !strings.Contains(text, "👥 <b>2. КТО ПЛАТИТ</b>") || !strings.Contains(text, "📈 <b>3. ОКНО ВОЗМОЖНОСТЕЙ</b>") || !strings.Contains(text, "🎯 <b>4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ</b>") {
 		t.Fatal("missing sections")
 	}
-	if strings.Contains(text, `<a href=`) {
-		t.Fatal("unverified link was displayed")
+	if !strings.Contains(text, "<a href=\"https://yandex.ru/maps/?um=constructor%3Amap\">Открыть карту</a>") {
+		t.Fatal("project map fallback link was not displayed")
 	}
 	placeholder := cardForLocation(catalog.Location{Title: "Тест"}, "https://yandex.ru/maps/?um=constructor%3Amap")
 	if !strings.Contains(placeholder, "Информация пока не добавлена.") || !strings.Contains(placeholder, "Пока не указан.") || !strings.Contains(placeholder, "4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ") || strings.Contains(placeholder, "кафе «Чебурашка»") || strings.Contains(placeholder, "Оценка:") {
@@ -145,8 +143,8 @@ func TestStationMapLinksArePerPoint(t *testing.T) {
 	if u.Query().Get("um") != "constructor:map-from-owner" || u.Query().Get("pt") != "37.6200000,55.7510000" || u.Query().Get("ll") != "37.6200000,55.7510000" {
 		t.Fatalf("source layer or coordinates were lost: %s", first)
 	}
-	if got := stationMapLink(catalog.Location{ID: "003"}, base); got != "" {
-		t.Fatalf("map link invented without coordinates: %q", got)
+	if got := stationMapLink(catalog.Location{ID: "003"}, base); got != base {
+		t.Fatalf("project map fallback missing without station coordinates: %q", got)
 	}
 	direct := "https://yandex.ru/maps/?whatshere%5Bpoint%5D=37.7%2C55.7"
 	if got := stationMapLink(catalog.Location{MapURL: direct}, base); got != direct {
@@ -156,7 +154,7 @@ func TestStationMapLinksArePerPoint(t *testing.T) {
 		t.Fatalf("unsafe url allowed: %q", got)
 	}
 	card := cardForLocation(a, base)
-	if !strings.Contains(card, "Открыть точку в Яндекс Картах") || !strings.Contains(card, "<a href=") {
+	if !strings.Contains(card, "Открыть карту") || !strings.Contains(card, "<a href=") {
 		t.Fatalf("per-station hyperlink missing: %s", card)
 	}
 }
@@ -172,7 +170,6 @@ func TestCardNavigation(t *testing.T) {
 
 type captureTransport struct {
 	requests []string
-	album    []byte
 	card     map[string]any
 }
 
@@ -183,8 +180,6 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	switch req.URL.Path {
-	case "/botTEST/sendMediaGroup":
-		c.album = raw
 	case "/botTEST/sendMessage":
 		if err = json.Unmarshal(raw, &c.card); err != nil {
 			return nil, err
@@ -192,17 +187,16 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 }
-func TestThreeOriginalPhotosThenCardWithLinks(t *testing.T) {
+func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed.json")
-	if err := os.WriteFile(seed, []byte(`[{"id":"017","title":"Метро Троицк","filename":"017.png","image_ext":".png","description":"Тестовое описание","rating":"8/10","lat":55.75,"lon":37.62}]`), 0600); err != nil {
+	if err := os.WriteFile(seed, []byte("[{\"id\":\"017\",\"title\":\"Метро Троицк\",\"filename\":\"017.png\",\"image_ext\":\".png\",\"description\":\"Тестовое описание\",\"rating\":\"8/10\"}]"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	imageBytes := []byte("ORIGINAL RAW PNG BYTES - NO RESIZING")
 	if err := os.MkdirAll(filepath.Join(dir, "images"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "images", "017.png"), imageBytes, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "images", "017.png"), []byte("image present but photos are disabled"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := catalog.New(dir, seed, filepath.Join(dir, "overrides.json"))
@@ -210,59 +204,24 @@ func TestThreeOriginalPhotosThenCardWithLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := &captureTransport{}
-	b := &Bot{token: "TEST", mapURL: "https://yandex.ru/maps/?um=constructor%3Atest", store: store, http: &http.Client{Transport: tr}}
+	projectMap := "https://yandex.ru/maps/?um=constructor%3Atest&source=constructorLink"
+	b := &Bot{token: "TEST", mapURL: projectMap, store: store, http: &http.Client{Transport: tr}}
 	if err := b.showLocation(context.Background(), 123, "017", 2); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.requests) != 2 || tr.requests[0] != "/botTEST/sendMediaGroup" || tr.requests[1] != "/botTEST/sendMessage" {
-		t.Fatalf("album followed by card required: %v", tr.requests)
-	}
-	first := bytes.SplitN(tr.album, []byte("\r\n"), 2)[0]
-	boundary := strings.TrimPrefix(string(first), "--")
-	mr := multipart.NewReader(bytes.NewReader(tr.album), boundary)
-	parts := map[string][]byte{}
-	for {
-		p, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		content, err := io.ReadAll(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parts[p.FormName()] = content
-	}
-	for i := 0; i < 3; i++ {
-		name := "photo" + string(rune('0'+i))
-		if !bytes.Equal(parts[name], imageBytes) {
-			t.Fatalf("%s differs from original image", name)
-		}
-	}
-	var media []map[string]string
-	if err := json.Unmarshal(parts["media"], &media); err != nil {
-		t.Fatal(err)
-	}
-	if len(media) != 3 {
-		t.Fatalf("exactly 3 photos required: %+v", media)
-	}
-	for i, m := range media {
-		if m["media"] != "attach://photo"+string(rune('0'+i)) {
-			t.Fatalf("incorrect photo mapping: %+v", media)
-		}
+	if len(tr.requests) != 1 || tr.requests[0] != "/botTEST/sendMessage" {
+		t.Fatalf("station card should be sent as one text message without photos: %v", tr.requests)
 	}
 	text, ok := tr.card["text"].(string)
-	if !ok || !strings.Contains(text, "Тестовое описание") || !strings.Contains(text, "Открыть точку в Яндекс Картах") {
-		t.Fatalf("station text or unique map URL missing: %+v", tr.card)
+	if !ok || !strings.Contains(text, "Тестовое описание") || !strings.Contains(text, "<a href=\"https://yandex.ru/maps/?um=constructor%3Atest&amp;source=constructorLink\">Открыть карту</a>") {
+		t.Fatalf("station text or project map link missing: %+v", tr.card)
 	}
 	kb, ok := tr.card["reply_markup"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing keyboard: %+v", tr.card)
 	}
 	keyboardBytes, _ := json.Marshal(kb)
-	if !bytes.Contains(keyboardBytes, []byte("page:2")) || !bytes.Contains(keyboardBytes, []byte("search")) || !bytes.Contains(keyboardBytes, []byte("menu")) {
+	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "search") || !strings.Contains(string(keyboardBytes), "menu") {
 		t.Fatalf("missing nav buttons: %s", keyboardBytes)
 	}
 }
@@ -326,7 +285,7 @@ func TestKlenovyBulvarSourceAnd39BlankTemplates(t *testing.T) {
 	if strings.Contains(card, "Оценка:") {
 		t.Fatal("rating not provided, should not be invented")
 	}
-	if strings.Contains(card, `<a href=`) {
-		t.Fatal("no verified map point yet")
+	if !strings.Contains(card, "<a href=\"https://yandex.ru/maps/?um=constructor%3Amap\">Открыть карту</a>") {
+		t.Fatal("project map fallback link missing")
 	}
 }

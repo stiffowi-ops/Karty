@@ -73,12 +73,20 @@ func markup(rows ...[]Button) map[string]any   { return map[string]any{"inline_k
 func menuButton() Button                       { return callbackButton("🏠 Главное меню", "menu") }
 func homeMarkup() any                          { return markup([]Button{menuButton()}) }
 
+// mainKeyboard is shown only after "📍 Рядом со мной" is selected from the inline menu.
+// Telegram supports request_location only in a reply keyboard.
 func mainKeyboard() any {
 	return map[string]any{"keyboard": []any{
-		[]any{map[string]any{"text": "📍 Рядом со мной", "request_location": true}},
-		[]any{map[string]any{"text": "📋 Список станций"}, map[string]any{"text": "🔎 Поиск"}},
-		[]any{map[string]any{"text": "🗺 Общая карта"}},
-	}, "resize_keyboard": true, "is_persistent": true}
+		[]any{map[string]any{"text": "📍 Отправить геопозицию", "request_location": true}},
+	}, "resize_keyboard": true, "one_time_keyboard": true}
+}
+
+func startMenuMarkup(mapURL string) any {
+	return markup(
+		[]Button{callbackButton("📍 Рядом со мной", "near")},
+		[]Button{callbackButton("📋 Список станций", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{urlButton("🗺 Общая карта", mapURL)},
+	)
 }
 func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.Syncer, admins string) *Bot {
 	ids := map[int64]bool{}
@@ -121,6 +129,37 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 	}
 	payload["reply_markup"] = keyboard
 	_, err := b.call(ctx, "sendMessage", payload)
+	return err
+}
+
+// sendWelcome removes a reply keyboard left by an older version, then attaches
+// the inline start menu to that same welcome message.
+func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboard any) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"text": text,
+		"parse_mode": "HTML",
+		"link_preview_options": map[string]any{"is_disabled": true},
+		"reply_markup": map[string]any{"remove_keyboard": true},
+	}
+	raw, err := b.call(ctx, "sendMessage", payload)
+	if err != nil {
+		return err
+	}
+	var sent struct {
+		MessageID int `json:"message_id"`
+	}
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		return err
+	}
+	if sent.MessageID == 0 {
+		return fmt.Errorf("Telegram sendMessage returned no message_id")
+	}
+	_, err = b.call(ctx, "editMessageReplyMarkup", map[string]any{
+		"chat_id": chatID,
+		"message_id": sent.MessageID,
+		"reply_markup": keyboard,
+	})
 	return err
 }
 func (b *Bot) answerCallback(ctx context.Context, id string) {
@@ -231,8 +270,8 @@ func (b *Bot) sendPhotoAlbum(ctx context.Context, chatID int64, loc catalog.Loca
 }
 
 func (b *Bot) welcome(ctx context.Context, chatID int64) error {
-	msg := "<b>Карта локаций</b> 🚇\n\nВыбери станцию по названию или отправь геопозицию, чтобы увидеть ближайшие объекты проекта. Я пришлю три фотографии локации и партнёрскую карточку с четырьмя разделами и ссылкой на карту (когда координаты будут известны).\n\nНажми <b>📍 Рядом со мной</b> и разреши Telegram отправить местоположение один раз. Также можно отправить точку на карте вручную.\n\nПоиск: просто напиши название станции."
-	return b.Send(ctx, chatID, msg, mainKeyboard())
+	msg := "<b>Карта локаций</b> 🚇\n\nВыбери станцию по названию или найди ближайшие объекты проекта по своей геопозиции. Я пришлю три фотографии локации и партнёрскую карточку с четырьмя разделами и ссылкой на карту.\n\nНажми <b>📍 Рядом со мной</b> под этим сообщением. Затем Telegram предложит отправить геопозицию — можно поделиться текущей точкой или выбрать её вручную.\n\nПоиск: просто напиши название станции."
+	return b.sendWelcome(ctx, chatID, msg, startMenuMarkup(b.mapURL))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -564,6 +603,10 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		switch {
 		case u.Callback.Data == "menu":
 			return b.welcome(ctx, chatID)
+		case u.Callback.Data == "near":
+			return b.requestLocation(ctx, chatID)
+		case u.Callback.Data == "list":
+			return b.showPage(ctx, chatID, 0)
 		case u.Callback.Data == "search":
 			return b.requestStationSearch(ctx, chatID)
 		case strings.HasPrefix(u.Callback.Data, "loc:"):
@@ -587,6 +630,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return nil
 	}
 	if m.Location != nil {
+		if err := b.Send(ctx, m.Chat.ID, "Геопозицию получил.", map[string]any{"remove_keyboard": true}); err != nil {
+			return err
+		}
 		return b.showNear(ctx, m.Chat.ID, m.Location)
 	}
 	chatID := m.Chat.ID
@@ -688,7 +734,7 @@ func (b *Bot) showMap(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "<b>Карта проекта</b> 🗺", markup([]Button{urlButton("Открыть Яндекс Карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "Нажми кнопку <b>📍 Рядом со мной</b> на клавиатуре и разреши отправку текущей геопозиции. Также можешь прикрепить произвольную точку через меню Telegram. Сведения о твоём местоположении не записываются в базу.", markup([]Button{callbackButton("📋 Список станций", "page:0"), menuButton()}))
+	return b.Send(ctx, chatID, "Нажми кнопку <b>📍 Отправить геопозицию</b> ниже и разреши Telegram отправить текущую точку. Также можно выбрать точку вручную через меню вложений. Геопозиция не сохраняется в базе.", mainKeyboard())
 }
 func (b *Bot) Run(ctx context.Context) error {
 	if _, err := b.call(ctx, "getMe", map[string]any{}); err != nil {

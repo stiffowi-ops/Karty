@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - bot_data:/app/runtime
+      - ./config:/app/config:ro
+    # No public ports are needed: Telegram long polling is outbound-only.
+volumes:
+  bot_data:

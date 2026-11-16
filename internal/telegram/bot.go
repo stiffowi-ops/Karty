@@ -159,12 +159,26 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, text string, keyboa
 	if sent.MessageID == 0 {
 		return fmt.Errorf("Telegram sendMessage returned no message_id")
 	}
-	_, err = b.call(ctx, "editMessageReplyMarkup", map[string]any{
+	_, attachErr := b.call(ctx, "editMessageReplyMarkup", map[string]any{
 		"chat_id": chatID,
 		"message_id": sent.MessageID,
 		"reply_markup": keyboard,
 	})
-	return err
+	if attachErr == nil {
+		return nil
+	}
+
+	// If the client/API rejects adding inline markup after the keyboard-removal
+	// message, send a fresh welcome with its inline keyboard already attached.
+	log.Printf("Attach start menu to message %d: %v; retrying with a new message", sent.MessageID, attachErr)
+	payload["reply_markup"] = keyboard
+	if _, sendErr := b.call(ctx, "sendMessage", payload); sendErr != nil {
+		return fmt.Errorf("attach start menu: %v; fallback send: %w", attachErr, sendErr)
+	}
+	if _, deleteErr := b.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": sent.MessageID}); deleteErr != nil {
+		log.Printf("Remove temporary welcome message %d: %v", sent.MessageID, deleteErr)
+	}
+	return nil
 }
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})

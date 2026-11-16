@@ -214,6 +214,13 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 		if exists {
 			loc.Description = prev.Description
 			loc.Rating = prev.Rating
+			loc.Landmarks = prev.Landmarks
+			loc.LineStatus = prev.LineStatus
+			loc.Traffic = prev.Traffic
+			loc.Payers = prev.Payers
+			loc.Opportunity = prev.Opportunity
+			loc.Conclusion = prev.Conclusion
+			loc.MapURL = prev.MapURL
 			loc.Latitude = prev.Latitude
 			loc.Longitude = prev.Longitude
 		}

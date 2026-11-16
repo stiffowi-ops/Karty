@@ -76,3 +76,61 @@ func TestRatingOverride(t *testing.T) {
 		t.Fatalf("wrong override: %+v", l)
 	}
 }
+
+func TestPartnerCardOverrideReload(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	ov := filepath.Join(root, "overrides.json")
+	if err := os.WriteFile(seed, []byte(`[{"id":"002","title":"Метро Кленовый бульвар","filename":"002.png","image_ext":".png"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ov, []byte(`{"002":{"line_status":"Открыто","landmarks":"Нагатино-Садовники","traffic":"Поток","payers":"Жители","opportunity":"Возможность","conclusion":"Итог"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(filepath.Join(root, "runtime"), seed, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, ok := store.Find("002")
+	if !ok || l.LineStatus != "Открыто" || l.Traffic != "Поток" || l.Payers != "Жители" || l.Opportunity != "Возможность" || l.Conclusion != "Итог" || l.Landmarks != "Нагатино-Садовники" {
+		t.Fatalf("fields missing from overrides: %+v", l)
+	}
+}
+
+func TestPartnerDefaultsPreserveUserCustomization(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed.json")
+	override := filepath.Join(root, "overrides.json")
+	partner := filepath.Join(root, "partner_cards.json")
+	mustWrite := func(path, text string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(seed, `[{"id":"002","title":"Метро Кленовый бульвар","filename":"002.png","image_ext":".png"},{"id":"003","title":"Метро Курьяново","landmarks":"Старый проверенный ориентир","filename":"003.png","image_ext":".png"}]`)
+	mustWrite(partner, `{"002":{"line_status":"Линия · открыто","traffic":"Трафик из шаблона"},"003":{}}`)
+	mustWrite(override, `{"002":{"lat":55.6,"lon":37.3,"payers":"Локальная правка"}}`)
+	store, err := New(filepath.Join(root, "runtime"), seed, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, ok := store.Find("002")
+	if !ok || one.Traffic != "Трафик из шаблона" || one.Payers != "Локальная правка" || one.Latitude == nil || *one.Latitude != 55.6 || one.Longitude == nil || *one.Longitude != 37.3 {
+		t.Fatalf("merge precedence wrong: %+v", one)
+	}
+	two, _ := store.Find("003")
+	if two.Landmarks != "Старый проверенный ориентир" {
+		t.Fatalf("empty template erased existing data: %+v", two)
+	}
+	if err := store.SaveBase(store.List()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := store.Find("002")
+	if again.Traffic != "Трафик из шаблона" || again.Payers != "Локальная правка" {
+		t.Fatalf("data lost on reload: %+v", again)
+	}
+}

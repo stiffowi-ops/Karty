@@ -18,6 +18,13 @@ type Location struct {
 	Category       string   `json:"category"`
 	Description    string   `json:"description,omitempty"`
 	Rating         string   `json:"rating,omitempty"`
+	Landmarks      string   `json:"landmarks,omitempty"`
+	LineStatus     string   `json:"line_status,omitempty"`
+	Traffic        string   `json:"traffic,omitempty"`
+	Payers         string   `json:"payers,omitempty"`
+	Opportunity    string   `json:"opportunity,omitempty"`
+	Conclusion     string   `json:"conclusion,omitempty"`
+	MapURL         string   `json:"map_url,omitempty"`
 	Latitude       *float64 `json:"lat,omitempty"`
 	Longitude      *float64 `json:"lon,omitempty"`
 	ImageExt       string   `json:"image_ext,omitempty"`
@@ -30,6 +37,13 @@ type Override struct {
 	Category    *string  `json:"category,omitempty"`
 	Description *string  `json:"description,omitempty"`
 	Rating      *string  `json:"rating,omitempty"`
+	Landmarks   *string  `json:"landmarks,omitempty"`
+	LineStatus  *string  `json:"line_status,omitempty"`
+	Traffic     *string  `json:"traffic,omitempty"`
+	Payers      *string  `json:"payers,omitempty"`
+	Opportunity *string  `json:"opportunity,omitempty"`
+	Conclusion  *string  `json:"conclusion,omitempty"`
+	MapURL      *string  `json:"map_url,omitempty"`
 	Latitude    *float64 `json:"lat,omitempty"`
 	Longitude   *float64 `json:"lon,omitempty"`
 }
@@ -104,8 +118,20 @@ func (s *Store) Reload() error {
 	if err != nil {
 		return err
 	}
+	templates := map[string]Override{}
+	// Shipped partner cards are kept separate from mutable user overrides so
+	// upgrading the bot never wipes locally customized coordinates or texts.
+	partnerPath := filepath.Join(filepath.Dir(s.overridePath), "partner_cards.json")
+	b, err := os.ReadFile(partnerPath)
+	if err == nil {
+		if err = json.Unmarshal(b, &templates); err != nil {
+			return fmt.Errorf("invalid partner cards JSON: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	override := map[string]Override{}
-	b, err := os.ReadFile(s.overridePath)
+	b, err = os.ReadFile(s.overridePath)
 	if err == nil {
 		if err = json.Unmarshal(b, &override); err != nil {
 			return fmt.Errorf("invalid overrides JSON: %w", err)
@@ -116,24 +142,47 @@ func (s *Store) Reload() error {
 	for i := range loc {
 		l := &loc[i]
 		l.ImageURL = ""
-		if o, ok := override[l.ID]; ok {
-			if o.Title != nil {
-				l.Title = *o.Title
-			}
-			if o.Category != nil {
-				l.Category = *o.Category
-			}
-			if o.Description != nil {
-				l.Description = *o.Description
-			}
-			if o.Rating != nil {
-				l.Rating = *o.Rating
-			}
-			if o.Latitude != nil && *o.Latitude >= -90 && *o.Latitude <= 90 {
-				l.Latitude = o.Latitude
-			}
-			if o.Longitude != nil && *o.Longitude >= -180 && *o.Longitude <= 180 {
-				l.Longitude = o.Longitude
+		for _, layer := range []map[string]Override{templates, override} {
+			if o, ok := layer[l.ID]; ok {
+				if o.Title != nil {
+					l.Title = *o.Title
+				}
+				if o.Category != nil {
+					l.Category = *o.Category
+				}
+				if o.Description != nil {
+					l.Description = *o.Description
+				}
+				if o.Rating != nil {
+					l.Rating = *o.Rating
+				}
+				if o.Landmarks != nil {
+					l.Landmarks = *o.Landmarks
+				}
+				if o.LineStatus != nil {
+					l.LineStatus = *o.LineStatus
+				}
+				if o.Traffic != nil {
+					l.Traffic = *o.Traffic
+				}
+				if o.Payers != nil {
+					l.Payers = *o.Payers
+				}
+				if o.Opportunity != nil {
+					l.Opportunity = *o.Opportunity
+				}
+				if o.Conclusion != nil {
+					l.Conclusion = *o.Conclusion
+				}
+				if o.MapURL != nil {
+					l.MapURL = *o.MapURL
+				}
+				if o.Latitude != nil && *o.Latitude >= -90 && *o.Latitude <= 90 {
+					l.Latitude = o.Latitude
+				}
+				if o.Longitude != nil && *o.Longitude >= -180 && *o.Longitude <= 180 {
+					l.Longitude = o.Longitude
+				}
 			}
 		}
 		if l.ImageExt == "" {

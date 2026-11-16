@@ -1,242 +1,482 @@
 {
   "001": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "002": {
-    "description": "",
+    "line_status": "Бирюлёвская линия · открыто",
+    "landmarks": "Нагатино-Садовники",
+    "traffic": "Действующая станция: пассажиропоток идёт уже сегодня, ждать пуска не нужно.",
+    "payers": "Жители Нагатино-Садовников: срочная печать, копии, документы.",
+    "opportunity": "Окно открыто прямо сейчас — старт выручки с первого месяца работы.",
+    "conclusion": "Единственная точка у работающей станции — старт без периода ожида…",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "003": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "004": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "005": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "006": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "007": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "008": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "009": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "010": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "011": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "012": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "013": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "014": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "015": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "016": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "017": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "018": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "019": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "020": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "021": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "022": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "023": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "024": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "025": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "026": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "027": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "028": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "029": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "030": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "031": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "032": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "033": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "034": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "035": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "036": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "037": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "038": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "039": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   },
   "040": {
-    "description": "",
+    "line_status": "",
+    "landmarks": "",
+    "traffic": "",
+    "payers": "",
+    "opportunity": "",
+    "conclusion": "",
     "rating": "",
     "lat": null,
-    "lon": null
+    "lon": null,
+    "map_url": ""
   }
 }

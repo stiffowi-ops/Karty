@@ -161,6 +161,16 @@ func (s *Store) Reload() error {
 		}
 		loc = approved
 	}
+	geo := map[string]Override{}
+	if s.useBundled {
+		geo, err = bundledGeoOverrides()
+		if err != nil { return fmt.Errorf("bundled geo: %w", err) }
+		approvedIDs := make(map[string]bool, len(loc))
+		for _, item := range loc { approvedIDs[item.ID] = true }
+		for id := range geo {
+			if !approvedIDs[id] { return fmt.Errorf("geo ID %s not in curated catalog", id) }
+		}
+	}
 	templates := map[string]Override{}
 	if s.useBundled {
 		templates, err = bundledPartnerCards()
@@ -192,7 +202,7 @@ func (s *Store) Reload() error {
 	for i := range loc {
 		l := &loc[i]
 		l.ImageURL = ""
-		for _, layer := range []map[string]Override{templates, override} {
+		for _, layer := range []map[string]Override{geo, templates, override} {
 			if o, ok := layer[l.ID]; ok {
 				if o.Title != nil {
 					l.Title = *o.Title

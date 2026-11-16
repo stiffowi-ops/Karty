@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -176,11 +177,49 @@ func TestCuratedCatalogRejectsExtraAndDuplicateSavedEntries(t *testing.T) {
 	if _, ok := store.Find("115"); ok { t.Fatal("obsolete location 115 visible") }
 	if _, ok := store.Find("116"); ok { t.Fatal("obsolete location 116 visible") }
 	one, ok := store.Find("001")
-	if !ok || one.Title!="Метро Остров Мечты" || one.MapURL!="https://yandex.ru/maps/test" || one.Latitude==nil || *one.Latitude!=lat || one.Filename!="001.png" {
+	if !ok || one.Title!="Метро Остров Мечты" || one.MapURL=="" || !strings.Contains(one.MapURL, "pt=") || one.Latitude==nil || *one.Latitude!=55.6921867213 || one.Filename!="001.png" {
 		t.Fatalf("approved location lost saved metadata: %+v", one)
 	}
 	if _, ok := store.Find("114"); !ok { t.Fatal("curated location 114 missing") }
 	original, err := store.Base()
 	if err != nil { t.Fatal(err) }
 	if len(original)!=4 { t.Fatalf("saved Docker catalog unexpectedly overwritten: %d",len(original)) }
+}
+
+func TestCuratedGeoOnly104ConfirmedLocations(t *testing.T) {
+	geo, err := bundledGeoOverrides()
+	if err != nil { t.Fatal(err) }
+	if len(geo)!=104 {t.Fatalf("expected 104, got %d",len(geo))}
+	for _, id := range []string{"006","007","010","011","030","035","051","052","054","065"} {
+		if _, ok := geo[id]; ok {t.Fatalf("unconfirmed/missing location %s has a geo pin",id)}
+	}
+	first := geo["001"]
+	if first.Latitude==nil || first.Longitude==nil || *first.Latitude!=55.6921867213 || *first.Longitude!=37.668590455 {
+		t.Fatalf("Остров Мечты coordinates wrong: %+v",first)
+	}
+	if first.MapURL==nil || !strings.Contains(*first.MapURL,"pt=37.668590455%2C55.6921867213") {
+		t.Fatalf("missing direct Yandex point link: %+v",first)
+	}
+}
+
+func TestCuratedGeoWinsOverStaleSavedDataButRespectsExplicitOverrides(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root,"seed.json")
+	ov := filepath.Join(root,"overrides.json")
+	if err:=os.WriteFile(seed,[]byte(`[{"id":"001","title":"Метро Остров Мечты"}]`),0600);err!=nil{t.Fatal(err)}
+	store,err:=NewWithBundled(filepath.Join(root,"runtime"),seed,ov)
+	if err!=nil{t.Fatal(err)}
+	lat:=55.0
+	if err:=store.SaveBase([]Location{{ID:"001",Title:"Старое название",MapURL:"https://yandex.ru/maps/",Latitude:&lat}});err!=nil{t.Fatal(err)}
+	if err:=store.Reload();err!=nil{t.Fatal(err)}
+	got,_:=store.Find("001")
+	if got.MapURL=="" || !strings.Contains(got.MapURL,"pt=") || got.Latitude==nil || *got.Latitude!=55.6921867213 {
+		t.Fatalf("saved placeholder was not replaced: %+v",got)
+	}
+	if err:=os.WriteFile(ov,[]byte(`{"001":{"lat":55.5,"lon":37.5,"map_url":"https://yandex.ru/maps/?ll=37.5%2C55.5&z=17"}}`),0600);err!=nil{t.Fatal(err)}
+	if err:=store.Reload();err!=nil{t.Fatal(err)}
+	got,_=store.Find("001")
+	if got.Latitude==nil || *got.Latitude!=55.5 || got.Longitude==nil || *got.Longitude!=37.5 || !strings.Contains(got.MapURL,"37.5") {
+		t.Fatalf("explicit override lost: %+v",got)
+	}
 }

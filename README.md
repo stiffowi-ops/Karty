@@ -18,18 +18,9 @@
 
 В проекте **нет самих 40 PNG-файлов**: они скачиваются с публичного Диска только при работающем серверном доступе. Если API Диска временно недоступен, бот покажет карточку текстом, а не выдуманную картинку.
 
-## 1. Положи файлы в GitHub
+## 1. Репозиторий GitHub
 
-Создай пустой репозиторий GitHub, загрузи содержимое папки `location-bot/`:
-
-```bash
-git init
-git add .
-git commit -m "Telegram location bot v2"
-git branch -M main
-git remote add origin https://github.com/YOUR_USER/location-bot.git
-git push -u origin main
-```
+Исходный код уже размещён в [stiffowi-ops/Karty](https://github.com/stiffowi-ops/Karty) в ветке `main`. Для установки на сервер достаточно клонировать этот репозиторий.
 
 Не добавляй `.env` в репозиторий: он исключён в `.gitignore`. Координаты и описания в `config/overrides.json` допустимо хранить в GitHub, если данные публичные. Файлы из `runtime/` и кэш изображений не хранятся в Git.
 
@@ -41,7 +32,7 @@ git push -u origin main
 sudo mkdir -p /opt/location-bot
 sudo chown "$USER":"$USER" /opt/location-bot
 cd /opt/location-bot
-git clone https://github.com/YOUR_USER/location-bot.git .
+git clone https://github.com/stiffowi-ops/Karty.git .
 cp .env.example .env
 nano .env
 ```

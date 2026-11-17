@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"locationbot/internal/catalog"
 )
@@ -115,7 +114,7 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 		if d.Kind == "new" {
 			step, total = 3, 4
 		}
-		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\nУкажите <b>Ваш номер телефона</b> для связи.\nНапример: <code>+7 999 123-45-67</code>.", step, total), markup(leadNav(true)...))
+		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\nУкажите <b>Ваш номер телефона</b> для связи.\nНомер должен начинаться с <b>+7</b> и содержать ещё <b>10 цифр</b>.\nНапример: <code>+7 999 123-45-67</code>.", step, total), markup(leadNav(true)...))
 	case "choose", "search":
 		return b.showLeadLocations(ctx, chatID, userID, d)
 	case "location_confirm":
@@ -364,10 +363,11 @@ func (b *Bot) handleLeadText(ctx context.Context, chatID int64, from user, input
 		d.Name = input
 		d.Stage = "phone"
 	case "phone":
-		if !validLeadPhone(input) {
-			return true, b.Send(ctx, chatID, "Укажите действующий номер телефона в международном формате, например <code>+7 999 123-45-67</code>.", markup(leadNav(true)...))
+		phone, ok := normalizeLeadPhone(input)
+		if !ok {
+			return true, b.Send(ctx, chatID, "Проверьте номер телефона. Он должен начинаться с <b>+7</b> и содержать ровно <b>10 цифр после +7</b>. Например: <code>+7 999 123-45-67</code>. Пробелы, скобки и дефисы допускаются.", markup(leadNav(true)...))
 		}
-		d.Phone = input
+		d.Phone = phone
 		if d.Source == "card" && d.SuggestedID != "" {
 			d.LocationID = d.SuggestedID
 			d.Stage = "location_confirm"
@@ -396,24 +396,36 @@ func (b *Bot) handleLeadText(ctx context.Context, chatID int64, from user, input
 	return true, b.showLead(ctx, chatID, from.ID, d)
 }
 
-func validLeadPhone(value string) bool {
-	digits := 0
+// normalizeLeadPhone accepts Russian phone numbers only: +7 followed by
+// exactly 10 digits. Formatting separators are allowed but removed before
+// storage, so the client and all administrators see a consistent +7XXXXXXXXXX.
+func normalizeLeadPhone(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "+7") {
+		return "", false
+	}
+	digits := make([]byte, 0, 11)
 	for i, r := range value {
-		if unicode.IsDigit(r) {
-			if r < '0' || r > '9' {
-				return false
-			}
-			digits++
-			continue
-		}
-		if r == '+' && i == 0 {
-			continue
-		}
-		if r != ' ' && r != '-' && r != '(' && r != ')' {
-			return false
+		switch {
+		case r >= '0' && r <= '9':
+			digits = append(digits, byte(r))
+		case r == '+' && i == 0:
+			// Allowed only as the initial country-code sign.
+		case r == ' ' || r == '-' || r == '(' || r == ')':
+			// Cosmetic separators don't count towards the phone length.
+		default:
+			return "", false
 		}
 	}
-	return digits >= 10 && digits <= 15
+	if len(digits) != 11 || digits[0] != '7' {
+		return "", false
+	}
+	return "+" + string(digits), true
+}
+
+func validLeadPhone(value string) bool {
+	_, ok := normalizeLeadPhone(value)
+	return ok
 }
 
 func (b *Bot) submitLead(ctx context.Context, chatID int64, from user, d leadDraft) error {
@@ -451,7 +463,7 @@ func adminLeadText(lead leadApplication) string {
 		kind = "Хочет работать с нами"
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📨 <b>Новая заявка №%04d · Karty</b>\n\n", lead.Number))
+	b.WriteString(fmt.Sprintf("📨 <b>Заявка №%04d</b>\n\n", lead.Number))
 	b.WriteString("<b>Тип:</b> " + kind + "\n")
 	if lead.Kind == "new" {
 		b.WriteString("<b>Юрлицо:</b> " + html.EscapeString(lead.Company) + "\n")

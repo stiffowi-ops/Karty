@@ -187,18 +187,33 @@ func TestFavoritesLeadLocationSelectionRestricted(t *testing.T) {
 }
 
 func TestLeadPhoneValidationAndFriendlyCopy(t *testing.T) {
-	for _, bad := range []string{"123", "test", "+777xyz12345", "+7 99"} {
+	for _, bad := range []string{
+		"123", "test", "+777xyz12345", "+7 99",
+		"+7906528893", "+790652889351", "+7 906 528 89 35 6",
+		"+1 (415) 555-1234", "89065288935", "79065288935",
+		"+7 906 528-89-3X", "+7++9065288935", "+7 906 528 89 35 доб",
+	} {
 		if validLeadPhone(bad) {
-			t.Errorf("accepted %q", bad)
+			t.Errorf("accepted invalid Russian phone %q", bad)
+		}
+		if normalized, ok := normalizeLeadPhone(bad); ok {
+			t.Errorf("normalized invalid %q to %q", bad, normalized)
 		}
 	}
-	for _, valid := range []string{"+7 999 123-45-67", "+1 (415) 555-1234"} {
-		if !validLeadPhone(valid) {
-			t.Errorf("rejected %q", valid)
+	for _, valid := range []string{
+		"+79065288935", "+7 906 528-89-35",
+		"+7 (906) 528 89 35", "  +7 906 528-89-35  ",
+	} {
+		normalized, ok := normalizeLeadPhone(valid)
+		if !ok || normalized != "+79065288935" || !validLeadPhone(valid) {
+			t.Errorf("rejected or incorrectly normalized %q => %q (ok=%v)", valid, normalized, ok)
 		}
 	}
 	lead := leadApplication{Number: 1, UserID: 45, Kind: "new", Company: "ООО <script>", Name: "Ирина", Phone: "+7 999 123-45-67", LocationName: "Метро Троицк", Source: "card"}
 	txt := adminLeadText(lead)
+	if !strings.Contains(txt, "Заявка №0001") || strings.Contains(txt, "· Karty") || strings.Contains(txt, "Новая заявка") {
+		t.Fatalf("unexpected admin lead heading: %s", txt)
+	}
 	if strings.Contains(txt, "<script>") || !strings.Contains(txt, "&lt;script&gt;") {
 		t.Fatalf("unsafe admin HTML: %s", txt)
 	}

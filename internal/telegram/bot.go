@@ -78,12 +78,13 @@ func markup(rows ...[]Button) map[string]any   { return map[string]any{"inline_k
 func menuButton() Button                       { return callbackButton("🏠 Главное меню", "menu") }
 func homeMarkup() any                          { return markup([]Button{menuButton()}) }
 
-// Main navigation uses inline buttons directly under the welcome message.
-// Keep the location action last, spanning the full width of the menu.
+// Main navigation remains inline under the welcome message.
+// A native location-sharing reply key can be introduced separately, because
+// Telegram only permits request_location on reply keyboards.
 func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
-		[]Button{callbackButton("📋 Список локаций", "list"), callbackButton("🔎 Поиск", "search")},
-		[]Button{callbackButton("⭐ Избранное", "favorites"), urlButton("🗺 Открыть карту", mapURL)},
+		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
+		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search")},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
 }
@@ -163,13 +164,13 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }
-func welcomeText(sender user, count int) string {
+func welcomeText(sender user) string {
 	name := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(sender.FirstName), strings.TrimSpace(sender.LastName)}, " "))
 	greeting := "Привет! 👋"
 	if name != "" {
 		greeting = "Привет, " + html.EscapeString(name) + "! 👋"
 	}
-	return greeting + fmt.Sprintf("\n\n🚀 <b>Не просто точки на карте. Точки роста твоего бизнеса!</b>\n\nМы собрали %d локаций с интересными возможностями для открытия и развития бизнеса.\n\nИзучай расположение, потенциальную аудиторию и преимущества каждой точки. Сравнивай варианты и сохраняй лучшие в избранное ⭐\n\n<b>Найди свою следующую точку роста 👇</b>", count)
+	return greeting + "\n\n🚀 <b>Не просто точки на карте. Точки роста твоего бизнеса!</b>\n\nМы собрали список локаций с интересными возможностями для открытия и развития бизнеса.\n\nИзучай расположение, потенциальную аудиторию и преимущества каждой точки. Сравнивай варианты и сохраняй лучшие в избранное ⭐\n\n<b>Найди свою следующую точку роста 👇</b>"
 }
 
 // An older release installed a persistent reply keyboard. Telegram requires
@@ -186,11 +187,7 @@ func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
 	if resetErr != nil {
 		log.Printf("Remove old reply keyboard: %v", resetErr)
 	}
-	count := 0
-	if b.store != nil {
-		count = len(b.store.List())
-	}
-	if err := b.Send(ctx, chatID, welcomeText(sender, count), startMenuMarkup(b.mapURL)); err != nil {
+	if err := b.Send(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL)); err != nil {
 		return err
 	}
 	if resetErr == nil {
@@ -299,7 +296,7 @@ func (b *Bot) showPage(ctx context.Context, chatID int64, page int) error {
 	if page > maxPage {
 		page = maxPage
 	}
-	return b.Send(ctx, chatID, fmt.Sprintf("<b>📍 Каталог локаций</b>\n\nЗдесь собраны %d точек с подробным описанием и возможностями для бизнеса.\n\nВыбирай интересующую локацию, изучай её преимущества и сохраняй понравившиеся варианты в избранное ⭐\n\n📖 Страница %d из %d", len(items), page+1, maxPage+1), markup(rows...))
+	return b.Send(ctx, chatID, fmt.Sprintf("<b>📍 Каталог локаций</b>\n\nЗдесь собран список локаций с подробным описанием и возможностями для бизнеса.\n\nВыбирай интересующую локацию, изучай её преимущества и сохраняй понравившиеся варианты в избранное ⭐\n\n📖 Страница %d из %d", page+1, maxPage+1), markup(rows...))
 }
 
 // Telegram text messages are limited to 4096 characters; keep the complete
@@ -830,9 +827,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	switch input {
 	case "📋 Список локаций", "📋 Список станций":
 		return b.showPage(ctx, chatID, 0)
-	case "🔎 Поиск":
+	case "🔎 Поиск локации", "🔎 Поиск":
 		return b.requestStationSearch(ctx, chatID)
-	case "🗺 Открыть карту", "🗺 Общая карта":
+	case "🗺 Карта локаций", "🗺 Открыть карту", "🗺 Общая карта":
 		return b.showMap(ctx, chatID)
 	case "📍 Рядом со мной":
 		return b.requestLocation(ctx, chatID)
@@ -928,7 +925,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	return b.Send(ctx, chatID, fmt.Sprintf("Найдено: %d. Выбери локацию:", len(found)), markup(rows...))
 }
 func (b *Bot) showMap(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "<b>Карта проекта</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
+	return b.Send(ctx, chatID, "<b>Карта локаций</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "Нажми кнопку <b>📍 Отправить геопозицию</b> ниже и разреши Telegram отправить текущую точку. Также можно выбрать точку вручную через меню вложений. Геопозиция не сохраняется в базе.", mainKeyboard())
@@ -938,7 +935,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		return fmt.Errorf("Bot token verification: %w", err)
 	}
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные локации"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие локации"}, {"command": "map", "description": "Исходная карта"}, {"command": "id", "description": "Мой Telegram ID"},
+		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные локации"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие локации"}, {"command": "map", "description": "Карта локаций"}, {"command": "id", "description": "Мой Telegram ID"},
 	}})
 	// Explicitly remove any Mini App menu configured by an older deployment.
 	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})

@@ -259,7 +259,7 @@ func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
 		text, _ := tr.card["text"].(string)
 		for _, want := range []string{
 			"<b>📍 Каталог локаций</b>",
-			"Здесь собраны 11 точек с подробным описанием и возможностями для бизнеса.",
+			"Здесь собран список локаций с подробным описанием и возможностями для бизнеса.",
 			"сохраняй понравившиеся варианты в избранное ⭐",
 			tc.expected,
 		} {
@@ -291,19 +291,22 @@ func TestLocationsButtonAndLegacyTextOpenCatalog(t *testing.T) {
 }
 
 
-func TestWelcomeReflectsActualCatalogSize(t *testing.T) {
-	for _, tc := range []struct{ count int; want string }{{114, "114 локаций"}, {116, "116 локаций"}} {
-		text := welcomeText(user{}, tc.count)
-		if !strings.Contains(text, tc.want) { t.Fatalf("expected %q, got %q", tc.want, text) }
+func TestWelcomeHidesNumericCatalogSize(t *testing.T) {
+	text := welcomeText(user{})
+	if !strings.Contains(text, "Мы собрали список локаций с интересными возможностями") {
+		t.Fatalf("friendly copy is missing: %q", text)
+	}
+	for _, old := range []string{"114 локаций", "116 локаций", "%!d"} {
+		if strings.Contains(text, old) { t.Fatalf("numeric count leaked into welcome: %q", text) }
 	}
 }
 
 func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
-	text := welcomeText(user{FirstName: "Иван"}, 114)
+	text := welcomeText(user{FirstName: "Иван"})
 	for _, expected := range []string{
 		"Привет, Иван! 👋",
 		"<b>Не просто точки на карте. Точки роста твоего бизнеса!</b>",
-		"114 локаций с интересными возможностями для открытия и развития бизнеса",
+		"Мы собрали список локаций с интересными возможностями для открытия и развития бизнеса",
 		"потенциальную аудиторию",
 		"сохраняй лучшие в избранное ⭐",
 		"<b>Найди свою следующую точку роста 👇</b>",
@@ -360,9 +363,9 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 		}
 	}
 	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
-	assertButton(0, 1, "🔎 Поиск", "callback_data", "search")
+	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
-	assertButton(1, 1, "🗺 Открыть карту", "url", defaultProjectMapURL)
+	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search")
 	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
 	if lastRow, _ := rows[2].([]any); len(lastRow) != 1 {
 		t.Fatalf("nearby button should be alone in last row: %+v", lastRow)
@@ -375,7 +378,7 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 func TestMainMenuMapButtonOpensLink(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
-	msg := &message{Text: "🗺 Открыть карту", Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
+	msg := &message{Text: "🗺 Карта локаций", Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
 	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
 		t.Fatal(err)
 	}
@@ -394,6 +397,19 @@ func TestMainMenuMapButtonOpensLink(t *testing.T) {
 	button, _ := row[0].(map[string]any)
 	if button["url"] != defaultProjectMapURL {
 		t.Fatalf("map button URL incorrect: %+v", button)
+	}
+}
+
+func TestNewAndLegacyMenuTextAliases(t *testing.T) {
+	for _, label := range []string{"🔎 Поиск локации", "🔎 Поиск"} {
+		tr := &captureTransport{}
+		b := &Bot{token: "TEST", http: &http.Client{Transport: tr}}
+		msg := &message{Text: label, Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
+		if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
+		text, _ := tr.card["text"].(string)
+		if !strings.Contains(text, "<b>Поиск локации</b>") {
+			t.Fatalf("search label %q did not open location search: %q", label, text)
+		}
 	}
 }
 
@@ -453,10 +469,10 @@ func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
 }
 
 func TestWelcomeTextFallsBackWithoutNameAndEscapesTelegramHTML(t *testing.T) {
-	if got := welcomeText(user{}, 114); !strings.HasPrefix(got, "Привет! 👋") {
+	if got := welcomeText(user{}); !strings.HasPrefix(got, "Привет! 👋") {
 		t.Fatalf("missing generic greeting fallback: %q", got)
 	}
-	if got := welcomeText(user{FirstName: "<Иван>"}, 114); !strings.Contains(got, "Привет, &lt;Иван&gt;! 👋") {
+	if got := welcomeText(user{FirstName: "<Иван>"}); !strings.Contains(got, "Привет, &lt;Иван&gt;! 👋") {
 		t.Fatalf("Telegram HTML in user name was not escaped: %q", got)
 	}
 }

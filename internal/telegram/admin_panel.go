@@ -38,6 +38,11 @@ type adminSession struct {
 	RestoreIndex     int
 	RestoreHash      string
 	CreatingLocation bool
+ CleanupKind string
+ CleanupTrash bool
+ CleanupPage int
+ CleanupSelected map[int64]bool
+ CleanupAction string
 }
 type adminRevisionEvent struct {
 	At         time.Time            `json:"at"`
@@ -92,12 +97,12 @@ func (b *Bot) showAdminTools(ctx context.Context, chatID int64) error {
 }
 func (b *Bot) adminLeadCount() int {
 	if b.leads == nil {return 0}
-	return len(b.leads.allSubmitted())
+	return len(b.leads.visibleSubmitted())
 }
 func (b *Bot) adminLeadDates() map[string][]time.Time {
 	result:=map[string][]time.Time{}
 	if b.leads == nil {return result}
-	for _,app:=range b.leads.allSubmitted() {
+	for _,app:=range b.leads.visibleSubmitted() {
 		if app.LocationID!="" {result[app.LocationID]=append(result[app.LocationID],app.CreatedAt)}
 	}
 	return result
@@ -973,6 +978,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		return nil
 	}
 	session := b.adminSession(from.ID)
+ if handled,err:=b.handleAdminCleanup(ctx,chatID,from.ID,data);handled{return err}
 	parts := strings.Split(data, ":")
 	switch {
 	case data == "adm:menu":

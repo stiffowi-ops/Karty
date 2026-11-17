@@ -572,7 +572,7 @@ func (b *Bot) retryPendingLeadNotifications(ctx context.Context) {
 
 func (b *Bot) showAdminLeads(ctx context.Context,chatID int64) error {
 	if b.leads==nil{return b.Send(ctx,chatID,"Хранилище заявок недоступно.",nil)}
-	all:=b.leads.allSubmitted()
+	all:=b.leads.visibleSubmitted()
 	var out strings.Builder
 	pending:=0
 	for _,lead:=range all{if !lead.TakenInWork {pending++}}
@@ -585,9 +585,12 @@ func (b *Bot) showAdminLeads(ctx context.Context,chatID int64) error {
 		out.WriteString(fmt.Sprintf("\n%s <b>№%04d</b> · %s · %s",status,lead.Number,html.EscapeString(lead.Name),html.EscapeString(lead.LocationName)))
 		if !lead.TakenInWork {
 			rows=append(rows,[]Button{callbackButton(fmt.Sprintf("📥 №%04d · Взять в работу",lead.Number),fmt.Sprintf("adm:leadtake:%d",lead.Number))})
-		}
+		}else{
+            rows=append(rows,[]Button{callbackButton(fmt.Sprintf("🗑 Скрыть №%04d",lead.Number),fmt.Sprintf("adm:clean:one:l:%d",lead.Number))})
+        }
 	}
 	if len(all)==0 {out.WriteString("\n\nЗаявок пока нет.")}
+	rows=append(rows,[]Button{callbackButton("🗑 Выбрать заявки","adm:clean:start:l:a"),callbackButton("♻️ Корзина","adm:clean:start:l:t")})
 	rows=append(rows,[]Button{callbackButton("⬅️ Админ-панель","adm:menu")})
 	return b.Send(ctx,chatID,out.String(),markup(rows...))
 }

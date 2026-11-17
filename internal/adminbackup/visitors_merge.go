@@ -22,6 +22,7 @@ type visitorBackupRecord struct {
  Daily map[string]int `json:"daily,omitempty"`
  HasLead bool `json:"has_lead,omitempty"`
  Alerted bool `json:"alerted,omitempty"`
+ Hidden bool `json:"hidden,omitempty"`
  AlertRecipients map[string]bool `json:"alert_recipients,omitempty"`
 }
 func parseVisitors(input []byte) (map[string]visitorBackupRecord,error) {

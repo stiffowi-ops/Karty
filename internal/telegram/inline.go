@@ -86,7 +86,7 @@ func inlineLocationRows(id string, saved bool) [][]Button {
  return [][]Button{
   {callbackButton(label, "fav:inline:"+id)},
   {callbackButton("📝 Оставить заявку", "inline:nav:lead:"+id)},
-  {callbackButton("⭐ Перейти в избранное","inline:nav:favorites"),inlineSearchButton()},
+  {callbackButton("⭐ Перейти в избранное","inline:nav:favorites"),callbackButton("🔎 Поиск локации","search:catalog")},
   {callbackButton("🏠 Главное меню","inline:nav:menu")},
  }
 }
@@ -160,27 +160,34 @@ func (b *Bot) toggleInlineFavorite(ctx context.Context, callback *callbackQuery)
  return b.replyInlineCallback(ctx,callback,"✅ Убрано из избранного")
 }
 
+// Normal and inline cards use the same screen rendering functions.
+// The main menu may safely replace an inline result, because it contains no
+// personal data. Favorites always open in the caller's private chat, never
+// inside a possibly public inline result.
 func (b *Bot) inlineNavigate(ctx context.Context, callback *callbackQuery) error {
- if callback==nil{return nil}
- if strings.HasPrefix(callback.Data,"inline:nav:lead:") {
-  return b.openInlineLead(ctx,callback)
- }
- if callback.From.ID<=0{return b.replyInlineCallback(ctx,callback,"Не удалось открыть раздел.")}
- // Inline callbacks often have only inline_message_id. Always deliver
- // personal sections to the caller's private chat, never to the source group.
- chatID:=callback.From.ID
- var err error
- switch callback.Data {
- case "inline:nav:favorites":
-  err=b.showFavorites(ctx,chatID,callback.From.ID)
- case "inline:nav:menu":
-  err=b.welcome(ctx,chatID,callback.From)
- default:
-  return b.replyInlineCallback(ctx,callback,"Раздел не найден.")
- }
- if err!=nil {
-  log.Printf("Inline navigation to private chat failed: %v",err)
-  return b.replyInlineCallback(ctx,callback,"Открой личный чат с ботом и нажми /start.")
- }
- return b.replyInlineCallback(ctx,callback,"Открыл в личном чате ✅")
+	if callback == nil { return nil }
+	if strings.HasPrefix(callback.Data, "inline:nav:lead:") {
+		return b.openInlineLead(ctx, callback)
+	}
+	if callback.From.ID <= 0 {
+		return b.replyInlineCallback(ctx, callback, "Не удалось открыть раздел.")
+	}
+	if err := b.replyInlineCallback(ctx, callback, ""); err != nil {
+		log.Printf("Acknowledge inline navigation: %v", err)
+	}
+	chatID := callback.From.ID
+	switch callback.Data {
+	case "inline:nav:favorites":
+		return b.showFavorites(b.privateScreenContext(ctx, chatID), chatID, chatID)
+	case "inline:nav:menu":
+		if callback.InlineMessageID != "" {
+			return b.welcome(withInlineNavigation(ctx, callback.InlineMessageID), chatID, callback.From)
+		}
+		if callback.Message != nil && callback.Message.Chat.Type == "private" {
+			return b.welcome(withNavigation(ctx, callback.Message.Chat.ID, callback.Message.MessageID), callback.Message.Chat.ID, callback.From)
+		}
+		return b.welcome(b.privateScreenContext(ctx, chatID), chatID, callback.From)
+	default:
+		return nil
+	}
 }

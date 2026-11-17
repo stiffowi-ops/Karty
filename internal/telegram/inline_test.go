@@ -54,7 +54,7 @@ func TestInlineQuerySendsLocationCard(t *testing.T){
  card:=rich["html"].(string)
  if !strings.Contains(card,"Метро Академика Черенкова")||!strings.Contains(card,"Жители района")||!strings.Contains(card,"Открыть карту")||strings.Count(card,"<details>")!=4{t.Fatalf("incomplete rich card: %s",card)}
  kb,_:=json.Marshal(res["reply_markup"])
- for _,want:=range []string{"fav:inline:001","Добавить в избранное","Перейти в избранное","inline:nav:favorites","inline:nav:menu","switch_inline_query_current_chat"} {
+ for _,want:=range []string{"fav:inline:001","Добавить в избранное","Перейти в избранное","inline:nav:favorites","inline:nav:menu","search:catalog"} {
   if !strings.Contains(string(kb),want){t.Fatalf("missing %q in inline keyboard: %s",want,kb)}
  }
  if strings.Contains(string(kb),"🗺 Открыть на карте"){t.Fatalf("duplicate map button: %s",kb)}
@@ -87,7 +87,40 @@ func TestInlineNavigationOpensPersonalChat(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"nav",Data:"inline:nav:favorites",From:user{ID:77},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- if len(tr.calls)<2 || tr.calls[0]!="/botTEST/sendMessage" || tr.calls[len(tr.calls)-1]!="/botTEST/answerCallbackQuery"{
-  t.Fatalf("navigation must open the user's private chat, not edit inline result: %v",tr.calls)
+ // No extraneous "opened in your private chat" notification. Personal
+ // favorites are delivered only to that user's private chat.
+ if len(tr.calls)<2 || tr.calls[0]!="/botTEST/answerCallbackQuery" || tr.calls[len(tr.calls)-1]!="/botTEST/sendMessage"{
+  t.Fatalf("navigation should acknowledge silently and open private favorites: %v",tr.calls)
  }
+ if tr.payload["chat_id"]!=float64(77) {
+  t.Fatalf("favorites sent outside personal chat: %+v",tr.payload)
+ }
+}
+func TestInlineMainMenuReplacesChosenResult(t *testing.T) {
+ b,tr:=makeInlineTestBot(t)
+ cb:=&callbackQuery{ID:"nav-menu",Data:"inline:nav:menu",From:user{ID:77,FirstName:"Иван"},InlineMessageID:"inline-123"}
+ if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
+ if len(tr.calls)!=2 || tr.calls[0]!="/botTEST/answerCallbackQuery" || tr.calls[1]!="/botTEST/editMessageText" {
+  t.Fatalf("inline menu should edit the chosen card without a new message: %v",tr.calls)
+ }
+ if tr.payload["inline_message_id"]!="inline-123" {t.Fatalf("wrong edited inline card: %+v",tr.payload)}
+ value,_:=tr.payload["text"].(string)
+ if !strings.Contains(value,"Точки роста") {t.Fatalf("menu text not edited: %q",value)}
+}
+func TestInlineSearchTransitionUpdatesChosenResult(t *testing.T) {
+ b,tr:=makeInlineTestBot(t)
+ cb:=&callbackQuery{ID:"nav-search",Data:"search:catalog",From:user{ID:77},InlineMessageID:"inline-123"}
+ if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
+ if len(tr.calls)!=2 || tr.calls[1]!="/botTEST/editMessageText" {
+  t.Fatalf("search menu should edit chosen result: %v",tr.calls)
+ }
+ keyboard,_:=tr.payload["reply_markup"].(map[string]any)
+ rows,_:=keyboard["inline_keyboard"].([]any)
+ if len(rows)!=2 {
+  t.Fatalf("search screen must have compact two-row keyboard: %+v",keyboard)
+ }
+ first,_:=rows[0].([]any)
+ if len(first)!=2 {t.Fatalf("search and back should share row: %+v",first)}
+ back,_:=first[1].(map[string]any)
+ if back["callback_data"]!="page:0" {t.Fatalf("expected return to catalog: %+v",back)}
 }

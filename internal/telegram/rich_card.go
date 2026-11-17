@@ -54,16 +54,27 @@ func richLocationHTML(raw catalog.Location, layerURL string) string {
 
 func (b *Bot) sendRichLocation(ctx context.Context, chatID int64, loc catalog.Location, keyboard any) error {
  rich := map[string]any{"html":richLocationHTML(loc,b.mapURL)}
+ if inlineID, ok := inlineNavigationFromContext(ctx); ok {
+  _, err := b.call(ctx,"editMessageText",map[string]any{
+   "inline_message_id": inlineID, "rich_message": rich, "reply_markup": keyboard,
+  })
+  if err==nil || strings.Contains(strings.ToLower(err.Error()),"message is not modified") { return nil }
+  log.Printf("Rich inline card edit failed: %v; sending a private fallback",err)
+ }
  if messageID,ok:=navigationFromContext(ctx,chatID);ok{
   _,err:=b.call(ctx,"editMessageText",map[string]any{
    "chat_id":chatID,"message_id":messageID,"rich_message":rich,"reply_markup":keyboard,
   })
-  if err==nil || strings.Contains(strings.ToLower(err.Error()),"message is not modified"){return nil}
+  if err==nil || strings.Contains(strings.ToLower(err.Error()),"message is not modified"){
+   b.rememberBotScreenID(chatID,messageID)
+   return nil
+  }
   log.Printf("Rich card edit failed for %d: %v; sending new card",messageID,err)
  }
- _,err:=b.call(ctx,"sendRichMessage",map[string]any{
+ raw,err:=b.call(ctx,"sendRichMessage",map[string]any{
   "chat_id":chatID,"rich_message":rich,"reply_markup":keyboard,
  })
+ if err==nil {b.rememberBotScreen(chatID,raw)}
  return err
 }
 
@@ -74,7 +85,7 @@ func regularCardRows(id string, backPage int, saved bool) [][]Button {
  return [][]Button{
   {callbackButton(label,"fav:toggle:"+id+":"+strconv.Itoa(backPage))},
   {leadButton("card", id)},
-  {callbackButton("⭐ Перейти в избранное","favorites"),inlineSearchButton()},
+  {callbackButton("⭐ Перейти в избранное","favorites"),callbackButton("🔎 Поиск локации","search:catalog")},
   {callbackButton("⬅️ К списку","page:"+strconv.Itoa(backPage)),menuButton()},
  }
 }

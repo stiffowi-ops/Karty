@@ -197,7 +197,7 @@ func TestCardNavigation(t *testing.T) {
 	if len(rows) != 2 || len(rows[0]) != 2 || len(rows[1]) != 1 {
 		t.Fatalf("expected two main buttons and menu on bottom: %+v", rows)
 	}
-	if rows[0][0]["callback_data"] != "page:3" || rows[0][1]["switch_inline_query_current_chat"] != "" || rows[0][1]["text"] != "🔎 Поиск локации" || rows[1][0]["callback_data"] != "menu" {
+	if rows[0][0]["callback_data"] != "page:3" || rows[0][1]["callback_data"] != "search:catalog" || rows[0][1]["text"] != "🔎 Поиск локации" || rows[1][0]["callback_data"] != "menu" {
 		t.Fatalf("incorrect callbacks: %+v", rows)
 	}
 }
@@ -261,7 +261,7 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 		t.Fatalf("missing keyboard: %+v", tr.card)
 	}
 	keyboardBytes, _ := json.Marshal(kb)
-	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "switch_inline_query_current_chat") || !strings.Contains(string(keyboardBytes), "menu") || !strings.Contains(string(keyboardBytes), "Перейти в избранное") {
+	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "search:catalog") || !strings.Contains(string(keyboardBytes), "menu") || !strings.Contains(string(keyboardBytes), "Перейти в избранное") {
 		t.Fatalf("missing nav buttons: %s", keyboardBytes)
 	}
 	if !strings.Contains(string(keyboardBytes), "fav:toggle:017:2") || !strings.Contains(string(keyboardBytes), "Добавить в избранное") {
@@ -396,7 +396,7 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
-	assertButton(1, 1, "🔎 Поиск локации", "switch_inline_query_current_chat", "")
+	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search:menu")
 	assertButton(2, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
 	assertButton(3, 0, "📍 Рядом со мной", "callback_data", "near")
 	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
@@ -506,10 +506,16 @@ func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
 	}
 	markup, _ := tr.card["reply_markup"].(map[string]any)
 	keyboard, _ := json.Marshal(markup)
-	for _, value := range []string{"list", "search", "menu"} {
+	for _, value := range []string{"list", "search:favorites", "menu"} {
 		if !strings.Contains(string(keyboard), value) {
 			t.Errorf("empty favorites shortcut %q missing: %s", value, keyboard)
 		}
+	}
+	rows, _ := markup["inline_keyboard"].([]any)
+	if len(rows) != 3 { t.Fatalf("expected compact two-button row, lead, menu: %+v", rows) }
+	first, _ := rows[0].([]any)
+	if len(first) != 2 {
+		t.Fatalf("location selection and search must share first row: %+v", rows)
 	}
 }
 

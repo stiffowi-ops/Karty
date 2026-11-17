@@ -34,6 +34,10 @@ type Bot struct {
 	http                      *http.Client
 	compareMu                 sync.Mutex
 	compareSelections         map[int64][]string
+	screenMu                 sync.Mutex
+	lastScreens              map[int64]int
+	searchPrompts            map[int64]int
+	botID                    int64
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -88,7 +92,7 @@ func homeMarkup() any                          { return markup([]Button{menuButt
 func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
 		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
-		[]Button{callbackButton("⭐ Избранное", "favorites"), inlineSearchButton()},
+		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search:menu")},
 		[]Button{leadButton("menu", "")},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
@@ -147,18 +151,22 @@ func (b *Bot) call(ctx context.Context, method string, payload any) (json.RawMes
 	return result.Result, nil
 }
 func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any) error {
-	payload := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML", "link_preview_options": map[string]any{"is_disabled": true}}
 	if keyboard == nil {
 		keyboard = homeMarkup()
 	}
-	payload["reply_markup"] = keyboard
+	if inlineID, ok := inlineNavigationFromContext(ctx); ok {
+		if err := b.editInlineNavigationMessage(ctx, inlineID, text, keyboard); err == nil {
+			return nil
+		} else {
+			log.Printf("Edit inline screen %s: %v; sending private fallback", inlineID, err)
+			return b.sendNewText(ctx, chatID, text, keyboard)
+		}
+	}
 	if messageID, ok := navigationFromContext(ctx, chatID); ok {
 		return b.editTextOrSend(ctx, chatID, messageID, text, keyboard)
 	}
-	_, err := b.call(ctx, "sendMessage", payload)
-	return err
+	return b.sendNewText(ctx, chatID, text, keyboard)
 }
-
 func (b *Bot) answerCallback(ctx context.Context, id string) {
 	_, _ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
 }
@@ -176,6 +184,9 @@ func welcomeText(sender user) string {
 // after the inline menu has been delivered.
 func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64, text string, inline any) error {
 	if _, ok := navigationFromContext(ctx, chatID); ok {
+		return b.Send(ctx, chatID, text, inline)
+	}
+	if _, ok := inlineNavigationFromContext(ctx); ok {
 		return b.Send(ctx, chatID, text, inline)
 	}
 	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
@@ -287,7 +298,7 @@ func stationPageRows(items []catalog.Location, page int) ([][]Button, int) {
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []Button{leadButton("menu", "")}, []Button{menuButton()})
+	rows = append(rows, []Button{callbackButton("🔎 Найти локацию", "search:catalog"), leadButton("menu", "")}, []Button{menuButton()})
 	return rows, lastPage
 }
 
@@ -455,20 +466,41 @@ func locationBackRows(backPage int) [][]Button {
 		backPage = 0
 	}
 	return [][]Button{
-		{callbackButton("⬅️ К списку", fmt.Sprintf("page:%d", backPage)), inlineSearchButton()},
+		{callbackButton("⬅️ К списку", fmt.Sprintf("page:%d", backPage)), callbackButton("🔎 Поиск локации", "search:catalog")},
 		{menuButton()},
 	}
 }
 
-func (b *Bot) requestStationSearch(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "🔎 <b>Поиск локации</b>\n\nНажми «Начать поиск» и вводи название. Telegram покажет подходящие локации по мере набора. Можно также просто отправить название сообщением.", markup(
-		[]Button{inlineSearchButton()},
-		[]Button{callbackButton("⬅️ К списку", "page:0")},
-		[]Button{leadButton("menu", "")},
-		[]Button{menuButton()},
+// Return navigation matches the section where the search was opened.
+// "Начать поиск" invokes Telegram's live inline suggestions; the surrounding
+// navigation remains a normal callback keyboard that can be edited in place.
+func (b *Bot) requestStationSearch(ctx context.Context, chatID int64, origin ...string) error {
+	source := "menu"
+	if len(origin) > 0 {
+		source = origin[0]
+	}
+	back := callbackButton("📋 Список локаций", "list")
+	leadSource := "menu"
+	switch source {
+	case "favorites":
+		back = callbackButton("⭐ К избранному", "favorites")
+		leadSource = "favorites"
+	case "catalog":
+		back = callbackButton("⬅️ К списку", "page:0")
+	}
+	search := inlineSearchButton()
+	search["text"] = "🔎 Начать поиск"
+	err := b.Send(ctx, chatID, "🔎 <b>Поиск локации</b>\n\nНажмите «Начать поиск» и введите название. Telegram покажет подходящие локации по мере набора. Можно также просто отправить название сообщением.", markup(
+		[]Button{search, back},
+		[]Button{leadButton(leadSource, ""), menuButton()},
 	))
+	if err == nil {
+		if _, inline := inlineNavigationFromContext(ctx); !inline {
+			b.markSearchPrompt(chatID)
+		}
+	}
+	return err
 }
-
 func (b *Bot) showLocation(ctx context.Context, chatID, userID int64, id string, backPage int) error {
 	l, found := b.store.Find(id)
 	if !found {
@@ -493,8 +525,7 @@ func (b *Bot) showFavorites(ctx context.Context, chatID, userID int64) error {
 	if len(items) == 0 {
 		text := "⭐ <b>Избранное</b>\n\nПока здесь пусто — сохраним первую локацию? 🙂\n\nОткрой список, выбери интересное место и нажми «⭐ Добавить в избранное» в карточке локации. Сохранённые локации появятся здесь — к ним можно будет вернуться или сравнить варианты."
 		return b.Send(ctx, chatID, text, markup(
-			[]Button{callbackButton("📋 Выбрать локацию", "list")},
-			[]Button{callbackButton("🔎 Найти локацию", "search")},
+			[]Button{callbackButton("📋 Выбрать локацию", "list"), callbackButton("🔎 Найти локацию", "search:favorites")},
 			[]Button{leadButton("favorites", "")},
 			[]Button{menuButton()},
 		))
@@ -508,7 +539,7 @@ func (b *Bot) showFavorites(ctx context.Context, chatID, userID int64) error {
 	}
 	rows = append(rows,
 		[]Button{callbackButton("⚖️ Сравнить локации", "compare:start")},
-		[]Button{callbackButton("📋 Добавить локацию", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{callbackButton("📋 Добавить локацию", "list"), callbackButton("🔎 Найти локацию", "search:favorites")},
 		[]Button{leadButton("favorites", "")},
 		[]Button{menuButton()},
 	)
@@ -580,19 +611,22 @@ func (b *Bot) editTextOrSend(ctx context.Context, chatID int64, messageID int, t
 			"reply_markup": keyboard,
 		})
 		if err == nil || strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+			b.rememberBotScreenID(chatID, messageID)
 			return nil
 		}
 		log.Printf("Refresh navigation message %d: %v; sending a new message", messageID, err)
 	}
-	return b.Send(ctx, chatID, text, keyboard)
+	// Do not call Send with the same navigation context here. That would
+	// retry the failing edit recursively instead of creating a fallback.
+	return b.sendNewText(ctx, chatID, text, keyboard)
 }
 
 func (b *Bot) showComparePicker(ctx context.Context, chatID, userID int64, messageID int, notice string) error {
 	items := b.favoriteLocations(userID)
 	if len(items) < 2 {
 		return b.Send(ctx, chatID, "Чтобы сравнить локации, сначала добавь в избранное хотя бы две.", markup(
-			[]Button{callbackButton("📋 Выбрать локацию", "list"), callbackButton("🔎 Найти локацию", "search")},
-			[]Button{callbackButton("⭐ Избранное", "favorites")},
+			[]Button{callbackButton("📋 Выбрать локацию", "list"), callbackButton("🔎 Найти локацию", "search:favorites")},
+			[]Button{leadButton("favorites", "")},
 			[]Button{menuButton()},
 		))
 	}
@@ -759,14 +793,30 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			return b.inlineNavigate(ctx, u.Callback)
 		}
 		b.answerCallback(ctx, u.Callback.ID)
-		if u.Callback.Message == nil {
-			return nil
+		chatID := u.Callback.From.ID
+		if u.Callback.Message != nil {
+			chatID = u.Callback.Message.Chat.ID
+			if u.Callback.Message.Chat.Type != "private" {
+				return nil
+			}
+			ctx = withNavigation(ctx, chatID, u.Callback.Message.MessageID)
+		} else {
+			// Telegram sends inline_message_id (without Message) for results
+			// chosen via inline search. Public navigation may edit that card.
+			if u.Callback.InlineMessageID == "" || chatID <= 0 {
+				return nil
+			}
+			if u.Callback.Data == "favorites" {
+				return b.showFavorites(b.privateScreenContext(ctx, chatID), chatID, u.Callback.From.ID)
+			}
+			if strings.HasPrefix(u.Callback.Data, "lead:") {
+				return b.handleLeadCallback(b.privateScreenContext(ctx, chatID), chatID, u.Callback.From, u.Callback.Data)
+			}
+			if !supportsPublicInlineNavigation(u.Callback.Data) {
+				return nil
+			}
+			ctx = withInlineNavigation(ctx, u.Callback.InlineMessageID)
 		}
-		chatID := u.Callback.Message.Chat.ID
-		if u.Callback.Message.Chat.Type != "private" {
-			return nil
-		}
-		ctx = withNavigation(ctx, chatID, u.Callback.Message.MessageID)
 		if strings.HasPrefix(u.Callback.Data, "lead:") {
 			return b.handleLeadCallback(ctx, chatID, u.Callback.From, u.Callback.Data)
 		}
@@ -777,8 +827,12 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			return b.requestLocation(ctx, chatID)
 		case u.Callback.Data == "list":
 			return b.showPage(ctx, chatID, 0)
-		case u.Callback.Data == "search":
-			return b.requestStationSearch(ctx, chatID)
+		case u.Callback.Data == "search" || strings.HasPrefix(u.Callback.Data, "search:"):
+			origin := "menu"
+			if strings.HasPrefix(u.Callback.Data, "search:") {
+				origin = strings.TrimPrefix(u.Callback.Data, "search:")
+			}
+			return b.requestStationSearch(ctx, chatID, origin)
 		case strings.HasPrefix(u.Callback.Data, "loc:"):
 			parts := strings.Split(strings.TrimPrefix(u.Callback.Data, "loc:"), ":")
 			if len(parts) == 0 {
@@ -843,6 +897,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	// An inline result is sent by the user via our bot. Its text already IS
 	// the location card; do not treat it as a new name-search query.
 	if m.ViaBot != nil {
+		// Only clean up the prompt when this message was sent via this
+		// bot's own inline suggestions, never for another bot.
+		if b.botID > 0 && m.ViaBot.ID == b.botID {
+			b.clearSelectedSearchPrompt(ctx, m.Chat.ID)
+		}
 		return nil
 	}
 	if m.Location != nil {
@@ -991,8 +1050,13 @@ func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
 	))
 }
 func (b *Bot) Run(ctx context.Context) error {
-	if _, err := b.call(ctx, "getMe", map[string]any{}); err != nil {
+	me, err := b.call(ctx, "getMe", map[string]any{})
+	if err != nil {
 		return fmt.Errorf("Bot token verification: %w", err)
+	}
+	var identity user
+	if err := json.Unmarshal(me, &identity); err == nil {
+		b.botID = identity.ID
 	}
 	b.startLeadDeliveryRetry(ctx)
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{

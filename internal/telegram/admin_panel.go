@@ -74,10 +74,11 @@ func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
 	return rows
 }
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
-	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать и добавлять локации, просматривать аналитику и заявки, управлять резервными копиями, историей изменений и настройками бота."
+	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно управлять локациями, заявками, просматривать аналитику и посетителей без заявки, а также работать с резервными копиями и настройками."
 	return b.Send(ctx, chatID, msg, markup(
 		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Локации", "adm:locations:0")},
-		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("🕘 История", "adm:history")},
+		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("👥 Посетители", "adm:visitors")},
+		[]Button{callbackButton("🕘 История", "adm:history")},
 		[]Button{callbackButton("📦 Бэкапы", "adm:backup"), callbackButton("🛠 Система", "adm:tools")},
 		[]Button{menuButton()},
 	))
@@ -905,6 +906,10 @@ func (b *Bot) restoreAdminBackup(ctx context.Context, chatID, userID int64, mode
 				b.favorites.mu.Lock()
 				defer b.favorites.mu.Unlock()
 			}
+			if b.visitors != nil {
+				b.visitors.mu.Lock()
+				defer b.visitors.mu.Unlock()
+			}
 		}
 		var path string
 		action := func() error {
@@ -928,6 +933,11 @@ func (b *Bot) restoreAdminBackup(ctx context.Context, chatID, userID int64, mode
 				}
 				if e = b.reloadLeadsAfterRestore(); e != nil {
 					return e
+				}
+				if b.visitors != nil {
+					v,e:=openVisitorStore(filepath.Join(b.store.DataDir(),"visitors.json"))
+					if e!=nil{return e}
+					b.visitors.users=v.users
 				}
 			}
 			return nil
@@ -968,6 +978,18 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 	case data == "adm:menu":
 		session.Field = ""
 		return b.showAdminMenu(ctx, chatID)
+	case data == "adm:visitors":
+		return b.showVisitors(ctx,chatID)
+	case strings.HasPrefix(data,"adm:visitors:"):
+		p:=strings.Split(data,":")
+		if len(p)!=4{return b.showVisitors(ctx,chatID)}
+		page,err:=strconv.Atoi(p[3])
+		if err!=nil{return b.showVisitors(ctx,chatID)}
+		return b.showVisitorsPage(ctx,chatID,p[2],page)
+	case strings.HasPrefix(data,"adm:visitor:"):
+		id,err:=strconv.ParseInt(strings.TrimPrefix(data,"adm:visitor:"),10,64)
+		if err!=nil || id<=0{return b.showVisitors(ctx,chatID)}
+		return b.showVisitor(ctx,chatID,id)
 	case data == "adm:backup":
 		session.Field = ""
 		session.AwaitingBackup = false

@@ -450,6 +450,13 @@ func (b *Bot) submitLead(ctx context.Context, chatID int64, from user, d leadDra
 	if already {
 		return b.leadAlreadySent(ctx, chatID, submitted)
 	}
+	// A successful application permanently clears the abandonment status;
+	// existing one-time alerts stay in history but no new alert is sent.
+	if b.visitors != nil {
+		if err := b.visitors.markLead(from.ID); err != nil {
+			log.Printf("Visitor %d status after application: %v",from.ID,err)
+		}
+	}
 	replyErr := b.Send(ctx, chatID, fmt.Sprintf("✅ <b>Ваша заявка №%04d успешно отправлена!</b>\n\nСпасибо за интерес к нашим локациям!\n\nМы получили Вашу заявку. Наш специалист свяжется с Вами по указанному номеру телефона, чтобы обсудить детали сотрудничества.", submitted.Number), markup([]Button{menuButton()}))
 	// Persisted once, deliver individually to every ADMIN_IDS recipient.
 	// The customer confirmation is sent first so slow Telegram admin chats

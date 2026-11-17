@@ -52,6 +52,10 @@ func (b *Bot) snapshotBackup() ([]byte, error) {
 		b.favorites.mu.Lock()
 		defer b.favorites.mu.Unlock()
 	}
+	if b.visitors != nil {
+		b.visitors.mu.Lock()
+		defer b.visitors.mu.Unlock()
+	}
 	var raw []byte
 	err := b.metrics.WithExclusiveFile(func() error {
 		var e error

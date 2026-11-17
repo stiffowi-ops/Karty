@@ -104,6 +104,42 @@ func TestStationSortRussianAndTwoColumnPages(t *testing.T) {
 		t.Fatalf("last page or Back incorrect: %+v", second)
 	}
 }
+func TestRichLocationCardUsesMetroAwareTitleAndNoImage(t *testing.T) {
+	metro := cardForLocation(catalog.Location{
+		ID: "001", Title: "Метро Остров Мечты", LineStatus: "Бирюлёвская линия",
+		Landmarks: "Ориентир у станции",
+	}, defaultProjectMapURL)
+	if !strings.HasPrefix(metro, "🚇 <b>Метро Остров Мечты</b>") {
+		t.Fatalf("metro heading lost: %s", metro)
+	}
+	shop := cardForLocation(catalog.Location{
+		ID: "002", Title: "Ашан Марфино", LineStatus: "Отдельная локация · без метро",
+		Landmarks: "д. Марфино, вл110 (данные проверить)",
+		Traffic: "Якорный АШАН", Payers: "Покупатели гипермаркета",
+		Opportunity: "Точка-резерв", Conclusion: "Резервная точка",
+	}, defaultProjectMapURL)
+	for _, section := range []string{
+		"📍 <b>Ашан Марфино</b>",
+		"📌 <i>Отдельная локация · без метро</i>",
+		"📌 <b>Ориентир:</b> д. Марфино, вл110",
+		"━━━━━━━━━━━━━━",
+		"🚶 <b>Трафик и локация</b>",
+		"👥 <b>Кто платит</b>",
+		"📈 <b>Возможности для бизнеса</b>",
+		"🎯 <b>Почему именно здесь</b>",
+		"🗺 <b>Локация на карте:</b>",
+	} {
+		if !strings.Contains(shop, section) {
+			t.Errorf("card missing %q: %s", section, shop)
+		}
+	}
+	for _, forbidden := range []string{"(данные проверить)", "🚇 <b>Ашан", "<img", "<photo", "1. ТРАФИК"} {
+		if strings.Contains(shop, forbidden) {
+			t.Errorf("unexpected card fragment %q: %s", forbidden, shop)
+		}
+	}
+}
+
 func TestCardTextAndHTMLSafety(t *testing.T) {
 	loc := catalog.Location{ID: "001", Title: "Метро <Остров> & Мечты", Description: strings.Repeat("Станция <тест> & название. ", 150), Rating: "8/10", Landmarks: "Выход рядом с <ориентиром>"}
 	text := cardForLocation(loc, "https://yandex.ru/maps/?um=constructor%3Amap")
@@ -114,14 +150,14 @@ func TestCardTextAndHTMLSafety(t *testing.T) {
 	if utf16Len(shown) > 4096 {
 		t.Fatalf("too long for Telegram: %d", utf16Len(shown))
 	}
-	if !strings.Contains(text, "Ориентир") || !strings.Contains(text, "8/10") || !strings.Contains(text, "🚶 <b>1. ТРАФИК И ЛОКАЦИЯ</b>") || !strings.Contains(text, "👥 <b>2. КТО ПЛАТИТ</b>") || !strings.Contains(text, "📈 <b>3. ОКНО ВОЗМОЖНОСТЕЙ</b>") || !strings.Contains(text, "🎯 <b>4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ</b>") {
+	if !strings.Contains(text, "Ориентир") || !strings.Contains(text, "8/10") || !strings.Contains(text, "🚶 <b>Трафик и локация</b>") || !strings.Contains(text, "👥 <b>Кто платит</b>") || !strings.Contains(text, "📈 <b>Возможности для бизнеса</b>") || !strings.Contains(text, "🎯 <b>Почему именно здесь</b>") {
 		t.Fatal("missing sections")
 	}
 	if !strings.Contains(text, "<a href=\"https://yandex.ru/maps/?um=constructor%3Amap\">Открыть карту</a>") {
 		t.Fatal("project map fallback link was not displayed")
 	}
 	placeholder := cardForLocation(catalog.Location{Title: "Тест"}, "https://yandex.ru/maps/?um=constructor%3Amap")
-	if !strings.Contains(placeholder, "Информация пока не добавлена.") || !strings.Contains(placeholder, "Пока не указан.") || !strings.Contains(placeholder, "4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ") || strings.Contains(placeholder, "кафе «Чебурашка»") || strings.Contains(placeholder, "Оценка:") {
+	if !strings.Contains(placeholder, "Информация пока не добавлена.") || !strings.Contains(placeholder, "Пока не указан.") || !strings.Contains(placeholder, "Почему именно здесь") || strings.Contains(placeholder, "кафе «Чебурашка»") || strings.Contains(placeholder, "Оценка:") {
 		t.Fatal("missing placeholders")
 	}
 }
@@ -519,7 +555,7 @@ func TestKlenovyBulvarCuratedCard(t *testing.T) {
 	l, ok := store.Find("002")
 	if !ok {t.Fatal("Кленовый бульвар missing")}
 	card := cardForLocation(l, "https://yandex.ru/maps/?um=constructor%3Amap")
-	for _, value := range []string{"<b>Метро Кленовый бульвар</b>", "Нагатино-Садовники", "1. ТРАФИК И ЛОКАЦИЯ", "2. КТО ПЛАТИТ", "3. ОКНО ВОЗМОЖНОСТЕЙ", "4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ", "без периода ожидания"} {
+	for _, value := range []string{"<b>Метро Кленовый бульвар</b>", "Нагатино-Садовники", "Трафик и локация", "Кто платит", "Возможности для бизнеса", "Почему именно здесь", "без периода ожидания"} {
 		if !strings.Contains(card, value) { t.Fatalf("card missing %q",value) }
 	}
 	if strings.Contains(card, "КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ") { t.Fatal("obsolete banner must be absent") }

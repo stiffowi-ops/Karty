@@ -384,44 +384,55 @@ func cardField(s string) string {
 	return limitCaptionUnits(strings.TrimSpace(s), 620)
 }
 
+// Present the location as a compact Telegram Rich Text card.
+// The reference work bot uses Telegram HTML with clear headings, whitespace
+// and a lightweight divider; MarkdownV2 is not required to achieve the style.
+// No photo is sent. This formatter is shared by catalog and inline search.
 func cardForLocation(l catalog.Location, layerURL string) string {
 	l = publicLocation(l)
-	title := limitCaptionUnits(l.Title, 150)
-	lineStatus := strings.TrimSpace(l.LineStatus)
-	if lineStatus == "" {
-		lineStatus = "Линия и статус пока не указаны."
+	title := html.EscapeString(limitCaptionUnits(l.Title, 150))
+	isMetro := strings.HasPrefix(strings.ToLower(strings.TrimSpace(l.Title)), "метро ")
+	icon := "📍"
+	statusIcon := "📌"
+	if isMetro {
+		icon = "🚇"
+		statusIcon = "🚇"
+	}
+
+	status := strings.TrimSpace(l.LineStatus)
+	if status == "" {
+		status = "Статус пока не указан."
 	}
 	landmark := strings.TrimSpace(l.Landmarks)
 	if landmark == "" {
 		landmark = "Пока не указан."
 	}
 	traffic := l.Traffic
-	// Keep older manually entered generic description visible until it has
-	// been moved to a structured section. Do not replace the 4-part template.
 	if strings.TrimSpace(traffic) == "" && strings.TrimSpace(l.Description) != "" {
 		traffic = l.Description
 	}
-
 	mapLine := "Ссылка на карту пока не настроена."
 	if link := stationMapLink(l, layerURL); link != "" {
 		mapLine = `<a href="` + html.EscapeString(link) + `">Открыть карту</a>`
 	}
+
 	lines := []string{
-		"🚇 <b>" + html.EscapeString(title) + "</b>",
+		icon + " <b>" + title + "</b>",
+		statusIcon + " <i>" + html.EscapeString(limitCaptionUnits(status, 200)) + "</i>",
+		"📌 <b>Ориентир:</b> " + html.EscapeString(limitCaptionUnits(landmark, 310)),
 		"",
-		"🚇 " + html.EscapeString(limitCaptionUnits(lineStatus, 200)),
-		"📍 <b>Ориентир:</b> " + html.EscapeString(limitCaptionUnits(landmark, 310)),
+		"━━━━━━━━━━━━━━",
 		"",
-		"🚶 <b>1. ТРАФИК И ЛОКАЦИЯ</b>",
+		"🚶 <b>Трафик и локация</b>",
 		html.EscapeString(cardField(traffic)),
 		"",
-		"👥 <b>2. КТО ПЛАТИТ</b>",
+		"👥 <b>Кто платит</b>",
 		html.EscapeString(cardField(l.Payers)),
 		"",
-		"📈 <b>3. ОКНО ВОЗМОЖНОСТЕЙ</b>",
+		"📈 <b>Возможности для бизнеса</b>",
 		html.EscapeString(cardField(l.Opportunity)),
 		"",
-		"🎯 <b>4. ИТОГ: ПОЧЕМУ ИМЕННО ЗДЕСЬ</b>",
+		"🎯 <b>Почему именно здесь</b>",
 		html.EscapeString(cardField(l.Conclusion)),
 	}
 	if rating := strings.TrimSpace(l.Rating); rating != "" {

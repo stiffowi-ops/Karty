@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// These are elapsed-time reminders for administrators, not client promises.
+// Delays count working time inside the daily Moscow office window.
 const supplementReminderDelay = 2 * time.Hour
 const supplementEscalationDelay = 4 * time.Hour
 
@@ -42,7 +42,7 @@ func supplementAdminText(l leadApplication, u leadUpdate, stage string) string {
 		title = "⏰ Дополнение ожидает принятия"
 	}
 	if stage == "escalation" {
-		title = "‼️ Дополнение не принято более 4 часов"
+		title = "‼️ Дополнение не принято более 4 рабочих часов"
 	}
 	text := fmt.Sprintf("<b>%s №%04d</b>\nДополнение №%d · %s\n\n<b>Клиент:</b> %s\n<b>Телефон:</b> %s\n", title, l.Number, u.ID, caseTime(u.CreatedAt), html.EscapeString(l.Name), html.EscapeString(l.Phone))
 	if l.Username != "" {
@@ -60,7 +60,7 @@ func supplementAdminText(l leadApplication, u leadUpdate, stage string) string {
 
 // Successful deliveries are durably acknowledged per event, stage and recipient.
 // The mutex serializes the polling retry and interactive request handlers.
-func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key string, chatID int64, text string, keyboard any) {
+func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key string, chatID int64, text string, keyboard any, reminderClock func() time.Time) {
 	latest, exists := b.leads.byNumber(l.Number)
 	if !exists || latest.Hidden || latest.NoticeReceipts[key] {
 		return
@@ -74,6 +74,15 @@ func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key stri
 		if e != nil || id <= 0 || id > len(latest.Updates) || latest.Updates[id-1].AcceptedAt != nil || latest.isResolved() {
 			return
 		}
+	}
+	if strings.HasPrefix(key, "case:") {
+		current, ok := b.leads.submitted(latest.UserID)
+		if !ok || current.Number != latest.Number || latest.TakenInWork || latest.isResolved() {
+			return
+		}
+	}
+	if isAdminReminderKey(key) && !adminWorkTime(reminderClock()) {
+		return
 	}
 	if key == "client:taken" && latest.isResolved() {
 		return
@@ -91,54 +100,107 @@ func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key stri
 		log.Printf("Case %d delivery receipt %s: %v", l.Number, key, err)
 	}
 }
+
+type caseNoticeSender func(leadApplication, string, int64, string, any)
+
+func pendingCaseReminderText(l leadApplication, stage string) string {
+	title := "⏰ Заявка не взята в работу"
+	delay := 2
+	if stage == "escalation" {
+		title = "‼️ Заявка не взята в работу"
+		delay = 4
+	}
+	return fmt.Sprintf("<b>%s · №%04d</b>\n\nОжидает обработки более %d рабочих часов.\nРабочее время: 09:00–19:00 МСК.\nПолучена: %s\n\n<b>Клиент:</b> %s\n<b>Телефон:</b> %s\n\n<b>Локации</b>\n%s", title, l.Number, delay, caseTime(l.CreatedAt), html.EscapeString(l.Name), html.EscapeString(l.Phone), locationLines(l.locations()))
+}
+func (b *Bot) notifyPendingCaseReminder(l leadApplication, now time.Time, send caseNoticeSender) {
+	if l.TakenInWork || l.isResolved() {
+		return
+	}
+	current, ok := b.leads.submitted(l.UserID)
+	if !ok || current.Number != l.Number {
+		return
+	}
+	stage := adminReminderStage(l.CreatedAt, now)
+	if stage == "" {
+		return
+	}
+	// After downtime send only the latest due stage to each recipient, instead
+	// of a 2h reminder and a 4h escalation together at the next opening.
+	for _, id := range b.caseAdminRecipients(l) {
+		send(l, fmt.Sprintf("case:%s:%d", stage, id), id, pendingCaseReminderText(l, stage), adminLeadMarkup(l))
+	}
+}
+func (b *Bot) notifySupplementReminder(l leadApplication, u leadUpdate, now time.Time, send caseNoticeSender) {
+	stage := adminReminderStage(u.CreatedAt, now)
+	if stage == "" {
+		return
+	}
+	if stage == "reminder" {
+		for _, id := range b.caseAdminRecipients(l) {
+			send(l, updateKey(u.ID, "reminder", id), id, supplementAdminText(l, u, "reminder"), supplementAdminMarkup(l, u))
+		}
+		return
+	}
+	// An assigned owner still gets their one outstanding reminder after a
+	// restart, while other administrators receive the escalation, once each.
+	owner := int64(0)
+	if l.TakenInWork && b.adminIDs[l.TakenBy] {
+		owner = l.TakenBy
+	}
+	if owner > 0 {
+		send(l, updateKey(u.ID, "reminder", owner), owner, supplementAdminText(l, u, "reminder"), supplementAdminMarkup(l, u))
+	}
+	ids := []int64{}
+	for id := range b.adminIDs {
+		if id != owner {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		send(l, updateKey(u.ID, "escalation", id), id, supplementAdminText(l, u, "escalation"), supplementAdminMarkup(l, u))
+	}
+}
 func (b *Bot) notifyCaseEvents(ctx context.Context, now time.Time) {
 	if b.leads == nil {
 		return
 	}
+	startedAt := time.Now()
 	b.leadNotifyMu.Lock()
 	defer b.leadNotifyMu.Unlock()
+	// Recheck the office window before every actual send. Account for the time
+	// spent on preceding API requests so a batch cannot run past 19:00.
+	reminderClock := func() time.Time { return now.Add(time.Since(startedAt)) }
+	send := caseNoticeSender(func(l leadApplication, key string, id int64, text string, keyboard any) {
+		b.deliverCaseNotice(ctx, l, key, id, text, keyboard, reminderClock)
+	})
 	for _, l := range b.leads.visibleSubmitted() {
+		b.notifyPendingCaseReminder(l, reminderClock(), send)
 		if l.ServiceVersion == 0 {
 			continue
 		}
 		if l.TakenInWork && !l.isResolved() {
-			b.deliverCaseNotice(ctx, l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\nСтатус и возможность дополнить обращение доступны в личном кабинете.", l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
+			send(l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\nСтатус и возможность дополнить обращение доступны в личном кабинете.", l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 		}
 		for _, u := range l.Updates {
 			if u.AcceptedAt != nil {
-				b.deliverCaseNotice(ctx, l, fmt.Sprintf("client:ack:%d", u.ID), l.UserID, fmt.Sprintf("✅ <b>Специалист принял дополнение №%d к обращению №%04d.</b>", u.ID, l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
+				send(l, fmt.Sprintf("client:ack:%d", u.ID), l.UserID, fmt.Sprintf("✅ <b>Специалист принял дополнение №%d к обращению №%04d.</b>", u.ID, l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 				continue
 			}
 			if l.isResolved() {
 				continue
 			}
-			recipients := b.caseAdminRecipients(l)
-			for _, id := range recipients {
-				b.deliverCaseNotice(ctx, l, updateKey(u.ID, "initial", id), id, supplementAdminText(l, u, "initial"), supplementAdminMarkup(l, u))
+			for _, id := range b.caseAdminRecipients(l) {
+				send(l, updateKey(u.ID, "initial", id), id, supplementAdminText(l, u, "initial"), supplementAdminMarkup(l, u))
 			}
-			if now.Sub(u.CreatedAt) >= supplementReminderDelay {
-				for _, id := range recipients {
-					b.deliverCaseNotice(ctx, l, updateKey(u.ID, "reminder", id), id, supplementAdminText(l, u, "reminder"), supplementAdminMarkup(l, u))
-				}
-			}
-			if now.Sub(u.CreatedAt) >= supplementEscalationDelay {
-				ids := []int64{}
-				for id := range b.adminIDs {
-					if id != l.TakenBy {
-						ids = append(ids, id)
-					}
-				}
-				sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-				for _, id := range ids {
-					b.deliverCaseNotice(ctx, l, updateKey(u.ID, "escalation", id), id, supplementAdminText(l, u, "escalation"), supplementAdminMarkup(l, u))
-				}
-			}
+			b.notifySupplementReminder(l, u, reminderClock(), send)
 		}
 		if l.isResolved() {
-			b.deliverCaseNotice(ctx, l, "client:resolved", l.UserID, fmt.Sprintf("✅ <b>Обращение №%04d решено.</b>\n\n<b>Итог</b>\n%s\n\nИстория сохранена в личном кабинете.", l.Number, html.EscapeString(l.Resolution)), markup([]Button{caseButton("📂 Посмотреть обращение", l.Number), cabinetButton()}))
+			send(l, "client:resolved", l.UserID, fmt.Sprintf("✅ <b>Обращение №%04d решено.</b>\n\n<b>Итог</b>\n%s\n\nИстория сохранена в личном кабинете.", l.Number, html.EscapeString(l.Resolution)), markup([]Button{caseButton("📂 Посмотреть обращение", l.Number), cabinetButton()}))
 		}
 	}
 }
+
 func (b *Bot) refreshSupplementMessages(ctx context.Context, l leadApplication) {
 	for key, mid := range l.NoticeMessages {
 		if !strings.HasPrefix(key, "update:") || mid <= 0 {

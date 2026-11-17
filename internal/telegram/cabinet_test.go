@@ -325,7 +325,14 @@ func TestSupplementRoutingRetriesRemindersAndLifecycleNotifications(t *testing.T
 	tr := &caseTransport{failAdmin: 300, failOnce: true}
 	b.http = &http.Client{Transport: tr}
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := time.Date(2026, 11, 17, 9, 0, 0, 0, visitTZ)
+	if _, _, err := b.leads.mutateCase(l.Number, func(v *leadApplication) (bool, error) {
+		v.CreatedAt = now
+		v.Updates[0].CreatedAt = now
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	b.notifyCaseEvents(ctx, now)
 	b.notifyCaseEvents(ctx, now)
 	if tr.count(200, "🔔 Дополнение") != 1 || tr.count(300, "🔔 Дополнение") != 2 {
@@ -336,6 +343,9 @@ func TestSupplementRoutingRetriesRemindersAndLifecycleNotifications(t *testing.T
 	}
 	b.notifyCaseEvents(ctx, now)
 	l = sendStoredSupplement(t, b, l.Number, []string{"003"}, "Второй вопрос")
+	if _, _, err := b.leads.mutateCase(l.Number, func(v *leadApplication) (bool, error) { v.Updates[1].CreatedAt = now; return true, nil }); err != nil {
+		t.Fatal(err)
+	}
 	b.notifyCaseEvents(ctx, now)
 	if tr.count(200, "🔔 Дополнение") != 2 || tr.count(300, "🔔 Дополнение") != 2 {
 		t.Fatal("assigned update was not routed only to its owner")

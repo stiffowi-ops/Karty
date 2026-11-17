@@ -11,7 +11,6 @@ import (
 // message instead of adding another bubble to the private chat.
 // We do not delete user messages, including messages sent via Inline Mode.
 type navigationKey struct{}
-type navigationKey struct{}
 
 // Inline results have inline_message_id instead of a normal Message. Keeping
 // that identifier in the same request context lets our normal screen

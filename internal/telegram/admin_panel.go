@@ -74,7 +74,7 @@ func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
 	return rows
 }
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
-	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно управлять локациями, заявками, просматривать аналитику и посетителей без заявки, а также работать с резервными копиями и настройками."
+	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать и добавлять локации, управлять заявками, просматривать аналитику и посетителей без заявки, работать с резервными копиями и настройками."
 	return b.Send(ctx, chatID, msg, markup(
 		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Локации", "adm:locations:0")},
 		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("👥 Посетители", "adm:visitors")},

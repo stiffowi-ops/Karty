@@ -430,7 +430,7 @@ func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
 	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
 	if reset["remove_keyboard"] != true { t.Fatalf("legacy keyboard not removed: %+v",reset) }
 	message, _ := tr.payloads[1]["text"].(string)
-	if !strings.Contains(message,"Скрепка") || !strings.Contains(message,"Геопозиция") {
+	if !strings.Contains(message,"Яндекс Карты") || !strings.Contains(message,"Скопировать ссылку") || !strings.Contains(message,"55.751, 37.618") {
 		t.Fatalf("instructions missing: %q",message)
 	}
 	if strings.Contains(message,"Telegram не позволяет запросить геопозицию") || strings.Contains(message,"Геопозиция не сохраняется в базе") || strings.Contains(message,"Бот покажет ближайшие точки") {
@@ -438,7 +438,11 @@ func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
 	}
 	kb,_ := tr.payloads[1]["reply_markup"].(map[string]any)
 	if _,ok:=kb["inline_keyboard"];!ok || kb["keyboard"]!=nil{
-		t.Fatalf("manual location prompt has wrong keyboard: %+v",kb)
+		t.Fatalf("map link guide has wrong keyboard: %+v",kb)
+	}
+	rawButtons, _ := json.Marshal(kb)
+	if !strings.Contains(string(rawButtons), "https://yandex.ru/maps/") {
+		t.Fatalf("Yandex Maps button missing: %+v",kb)
 	}
 	if len(tr.requests)!=3 || tr.requests[2]!="/botTEST/deleteMessage" {
 		t.Fatalf("reset must be cleaned up: %+v",tr.requests)

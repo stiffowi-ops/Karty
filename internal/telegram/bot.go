@@ -897,6 +897,16 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if strings.HasPrefix(cmd, "/") {
 		return b.Send(ctx, chatID, "Неизвестная команда. /help", nil)
 	}
+	if mapInput, ok := sharedMapInput(input); ok {
+		point, err := resolveSharedMapPoint(ctx, b.http, mapInput)
+		if err != nil {
+			return b.Send(ctx, chatID, "📍 <b>Не получилось определить точку по ссылке.</b>\n\nВ Яндекс Картах открой нужное место и скопируй его <b>координаты</b>. Например: <code>55.751, 37.618</code>.\n\nОтправь их сюда, и я покажу ближайшие локации.", markup(
+				[]Button{urlButton("🗺 Открыть Яндекс Карты", "https://yandex.ru/maps/")},
+				[]Button{callbackButton("📍 Как выбрать точку", "near"), menuButton()},
+			))
+		}
+		return b.showNear(ctx, chatID, point)
+	}
 	found := catalog.Search(b.store.List(), input)
 	if len(found) == 0 {
 		return b.Send(ctx, chatID, "По запросу <b>"+html.EscapeString(input)+"</b> ничего не найдено. Попробуй часть названия.", nil)
@@ -920,7 +930,15 @@ func (b *Bot) showMap(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "<b>Карта локаций</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
-	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, "📍 <b>Рядом со мной</b>\n\nВ мобильном Telegram отправь точку через <b>📎 Скрепка → Геопозиция → Отправить текущую геопозицию</b>.", markup(
+	text := "📍 <b>Найди локации рядом с нужной точкой</b>\n\n" +
+		"<b>С компьютера:</b>\n" +
+		"1. Открой Яндекс Карты.\n" +
+		"2. Нажми на место на карте → <b>«Что здесь?»</b> → <b>«Поделиться»</b> → <b>«Скопировать ссылку»</b>.\n" +
+		"3. Пришли ссылку сюда в чат.\n\n" +
+		"Если ссылка не сработает, скопируй <b>координаты точки</b> и отправь их, например: <code>55.751, 37.618</code>.\n\n" +
+		"На телефоне можно отправить геопозицию через 📎."
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, text, markup(
+		[]Button{urlButton("🗺 Открыть Яндекс Карты", "https://yandex.ru/maps/")},
 		[]Button{callbackButton("⬅️ К списку локаций", "page:0"), menuButton()},
 	))
 }

@@ -42,10 +42,16 @@ func (b *Bot) openInlineLead(ctx context.Context, callback *callbackQuery) error
 }
 
 func (b *Bot) openLead(ctx context.Context, chatID, userID int64, source, suggestedID string) error {
+	if err := b.pauseClientForms(userID); err != nil {
+		return err
+	}
 	if b.leads == nil || b.store == nil || b.favorites == nil || len(b.adminIDs) == 0 {
 		return b.Send(ctx, chatID, "Приём заявок временно недоступен. Пожалуйста, попробуйте позже.", markup([]Button{menuButton()}))
 	}
-	if previous, exists := b.leads.submitted(userID); exists && !previous.TakenInWork {
+	if previous, exists := b.leads.submitted(userID); exists && !previous.isResolved() {
+		if source == "card" && suggestedID != "" {
+			return b.Send(ctx, chatID, fmt.Sprintf("У Вас есть активное обращение №%04d. Добавить выбранную локацию к нему?", previous.Number), markup([]Button{callbackButton("➕ Добавить к моему обращению", fmt.Sprintf("cab:add:%d:%s", previous.Number, suggestedID))}, []Button{caseButton("📂 Открыть обращение", previous.Number), cabinetButton()}))
+		}
 		return b.leadAlreadySent(ctx, chatID, previous)
 	}
 	if source == "favorites" && len(b.favoriteLocations(userID)) == 0 {
@@ -74,6 +80,13 @@ func (b *Bot) startLead(ctx context.Context, chatID, userID int64, source, sugge
 		suggestedID = ""
 	}
 	draft := leadDraft{Source: source, SuggestedID: suggestedID, Stage: "kind"}
+	if previous, ok := b.leads.submitted(userID); ok && previous.isResolved() {
+		draft.Kind = previous.Kind
+		draft.Company = previous.Company
+		draft.Name = previous.Name
+		draft.Phone = previous.Phone
+		draft.Stage = "reuse"
+	}
 	if err := b.leads.putDraft(userID, draft); err != nil {
 		return err
 	}
@@ -81,9 +94,11 @@ func (b *Bot) startLead(ctx context.Context, chatID, userID int64, source, sugge
 }
 
 func (b *Bot) leadAlreadySent(ctx context.Context, chatID int64, previous leadApplication) error {
-	return b.Send(ctx, chatID,
-		fmt.Sprintf("📩 <b>Ваша заявка №%04d уже принята!</b>\n\nЗаявка ожидает обработки специалистом. Новую заявку можно отправить после того, как администратор возьмёт текущую в работу.", previous.Number),
-		markup([]Button{menuButton()}))
+	return b.Send(ctx, chatID, fmt.Sprintf("📂 <b>У Вас есть активное обращение №%04d</b>\n%s\n\nВы можете добавить локации и уточнения к этому обращению. После его завершения можно будет создать новое.", previous.Number, leadStatus(previous)), markup(
+		[]Button{caseButton("📂 Открыть обращение", previous.Number)},
+		[]Button{callbackButton("➕ Добавить локацию", fmt.Sprintf("cab:add:%d", previous.Number)), callbackButton("💬 Уточнить", fmt.Sprintf("cab:comment:%d", previous.Number))},
+		[]Button{cabinetButton(), menuButton()},
+	))
 }
 
 func leadNav(back bool) [][]Button {
@@ -96,6 +111,12 @@ func leadNav(back bool) [][]Button {
 
 func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) error {
 	switch d.Stage {
+	case "reuse":
+		text := "📝 <b>Новое обращение</b>\n\nИспользовать контактные данные предыдущего обращения?\n\n<b>Имя:</b> " + html.EscapeString(d.Name) + "\n<b>Телефон:</b> " + html.EscapeString(d.Phone)
+		if d.Company != "" {
+			text += "\n<b>Компания:</b> " + html.EscapeString(d.Company)
+		}
+		return b.Send(ctx, chatID, text, markup([]Button{callbackButton("✅ Использовать данные", "lead:reuse")}, []Button{callbackButton("✏️ Заполнить заново", "lead:fresh")}, []Button{callbackButton("❌ Отменить", "lead:cancel")}))
 	case "kind":
 		return b.Send(ctx, chatID, "📝 <b>Оставить заявку</b>\n\nПодскажите, пожалуйста, Вы уже сотрудничаете с нами?", markup(
 			[]Button{callbackButton("🤝 Уже работаю с Вами", "lead:kind:existing")},
@@ -226,7 +247,7 @@ func (b *Bot) handleLeadCallback(ctx context.Context, chatID int64, from user, d
 	if b.leads == nil || b.store == nil {
 		return b.Send(ctx, chatID, "Сейчас форма недоступна.", nil)
 	}
-	if prev, ok := b.leads.submitted(from.ID); ok && !prev.TakenInWork {
+	if prev, ok := b.leads.submitted(from.ID); ok && !prev.isResolved() {
 		return b.leadAlreadySent(ctx, chatID, prev)
 	}
 	if strings.HasPrefix(data, "lead:restart:") {
@@ -242,8 +263,21 @@ func (b *Bot) handleLeadCallback(ctx context.Context, chatID int64, from user, d
 	if !ok {
 		return b.Send(ctx, chatID, "Заявка ещё не начата. Нажмите «Оставить заявку».", markup([]Button{leadButton("menu", "")}))
 	}
+	d.Paused = false
 	switch {
+	case data == "lead:reuse" && d.Stage == "reuse":
+		if d.Source == "card" && d.SuggestedID != "" {
+			d.LocationID = d.SuggestedID
+			d.Stage = "location_confirm"
+		} else {
+			d.Stage = "choose"
+		}
+	case data == "lead:fresh" && d.Stage == "reuse":
+		d = leadDraft{Source: d.Source, SuggestedID: d.SuggestedID, Stage: "kind"}
 	case data == "lead:resume":
+		if err := b.leads.putDraft(from.ID, d); err != nil {
+			return err
+		}
 		return b.showLead(ctx, chatID, from.ID, d)
 	case data == "lead:cancel":
 		if err := b.leads.clearDraft(from.ID); err != nil {
@@ -342,7 +376,7 @@ func (b *Bot) handleLeadText(ctx context.Context, chatID int64, from user, input
 		return false, nil
 	}
 	d, ok := b.leads.draft(from.ID)
-	if !ok {
+	if !ok || d.Paused {
 		return false, nil
 	}
 	// Allow commands to exit the form without swallowing /start, /id, etc.
@@ -454,10 +488,10 @@ func (b *Bot) submitLead(ctx context.Context, chatID int64, from user, d leadDra
 	// existing one-time alerts stay in history but no new alert is sent.
 	if b.visitors != nil {
 		if err := b.visitors.markLead(from.ID); err != nil {
-			log.Printf("Visitor %d status after application: %v",from.ID,err)
+			log.Printf("Visitor %d status after application: %v", from.ID, err)
 		}
 	}
-	replyErr := b.Send(ctx, chatID, fmt.Sprintf("✅ <b>Ваша заявка №%04d успешно отправлена!</b>\n\nСпасибо за интерес к нашим локациям!\n\nМы получили Вашу заявку. Наш специалист свяжется с Вами по указанному номеру телефона, чтобы обсудить детали сотрудничества.", submitted.Number), markup([]Button{menuButton()}))
+	replyErr := b.Send(ctx, chatID, fmt.Sprintf("✅ <b>Ваша заявка №%04d успешно отправлена!</b>\n\nСпасибо за интерес к нашим локациям!\n\nМы получили Вашу заявку. Наш специалист свяжется с Вами по указанному номеру телефона, чтобы обсудить детали сотрудничества.", submitted.Number), markup([]Button{caseButton("📂 Моё обращение", submitted.Number)}, []Button{cabinetButton(), menuButton()}))
 	// Persisted once, deliver individually to every ADMIN_IDS recipient.
 	// The customer confirmation is sent first so slow Telegram admin chats
 	// do not hold up the visible success response.
@@ -484,41 +518,80 @@ func adminLeadText(lead leadApplication) string {
 		b.WriteString("<b>Telegram:</b> @" + html.EscapeString(lead.Username) + "\n")
 	}
 	b.WriteString("<b>Источник:</b> " + html.EscapeString(lead.Source) + "\n")
-	b.WriteString("<b>Дата (UTC):</b> " + lead.CreatedAt.Format("02.01.2006 15:04"))
+	b.WriteString("<b>Дата:</b> " + caseTime(lead.CreatedAt))
+	b.WriteString("\n<b>Статус:</b> " + leadStatus(lead))
+	if lead.TakenBy > 0 {
+		b.WriteString(fmt.Sprintf("\n<b>Ответственный:</b> <code>%d</code>", lead.TakenBy))
+	}
+	b.WriteString("\n\n<b>Все локации</b>\n" + locationLines(lead.locations()))
+	pending := 0
+	for _, u := range lead.Updates {
+		if u.AcceptedAt == nil {
+			pending++
+		}
+	}
+	if len(lead.Updates) > 0 {
+		b.WriteString(fmt.Sprintf("\nДополнений: %d · Ожидают принятия: %d", len(lead.Updates), pending))
+	}
+	if lead.isResolved() {
+		b.WriteString("\n\n<b>Итог</b>\n" + html.EscapeString(limitCaptionUnits(lead.Resolution, 450)) + "\nПолный итог — в истории обращения.")
+	}
 	return b.String()
 }
 
 // The green "taken in work" button is available in recent Telegram clients.
 // Its callback is intentionally inert after a successful transition.
 func adminLeadMarkup(lead leadApplication) map[string]any {
-	if lead.TakenInWork {
-		return markup([]Button{{"text":"✅ Взято в работу","callback_data":fmt.Sprintf("lead:done:%d",lead.Number),"style":"success"}})
+	rows := [][]Button{{adminCaseButton(lead.Number)}}
+	if lead.isResolved() {
+		rows = append(rows, []Button{{"text": "✅ Решено", "callback_data": fmt.Sprintf("adm:case:view:%d", lead.Number), "style": "success"}})
+	} else if lead.TakenInWork {
+		rows = append(rows, []Button{{"text": "✅ Взято в работу", "callback_data": fmt.Sprintf("lead:done:%d", lead.Number), "style": "success"}}, []Button{callbackButton("✅ Решить обращение", fmt.Sprintf("adm:case:resolve:%d", lead.Number))})
+	} else {
+		rows = append(rows, []Button{callbackButton("📥 Взять в работу", fmt.Sprintf("lead:take:%d", lead.Number))})
 	}
-	return markup([]Button{callbackButton("📥 Взять в работу",fmt.Sprintf("lead:take:%d",lead.Number))})
+	return markup(rows...)
 }
 
 func (b *Bot) notifyLeadAdmins(ctx context.Context, lead leadApplication) {
-	if b.leads == nil {return}
-	ids := make([]int64,0,len(b.adminIDs))
-	for id := range b.adminIDs {ids=append(ids,id)}
-	sort.Slice(ids,func(i,j int)bool{return ids[i]<ids[j]})
+	if b.leads == nil {
+		return
+	}
+	b.leadNotifyMu.Lock()
+	defer b.leadNotifyMu.Unlock()
+	ids := make([]int64, 0, len(b.adminIDs))
+	for id := range b.adminIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		// Read fresh state on each attempt: the lead might already be taken
 		// into work while another admin notification is being sent.
 		actual, exists := b.leads.byNumber(lead.Number)
-		if !exists {return}
-		key:=strconv.FormatInt(id,10)
-		if actual.Delivered[key] {continue}
-		raw,err:=b.call(ctx,"sendMessage",map[string]any{
-			"chat_id":id,"text":adminLeadText(actual),"parse_mode":"HTML",
-			"link_preview_options":map[string]any{"is_disabled":true},
-			"reply_markup":adminLeadMarkup(actual),
+		if !exists || actual.Hidden {
+			return
+		}
+		key := strconv.FormatInt(id, 10)
+		if actual.Delivered[key] {
+			continue
+		}
+		raw, err := b.call(ctx, "sendMessage", map[string]any{
+			"chat_id": id, "text": adminLeadText(actual), "parse_mode": "HTML",
+			"link_preview_options": map[string]any{"is_disabled": true},
+			"reply_markup":         adminLeadMarkup(actual),
 		})
-		if err!=nil {log.Printf("Lead %d notify admin %d: %v",lead.Number,id,err);continue}
-		var sent struct {MessageID int `json:"message_id"`}
-		if err=json.Unmarshal(raw,&sent);err!=nil {log.Printf("Lead delivery message receipt: %v",err)}
-		if err:=b.leads.markDelivered(lead.UserID,lead.Number,id,sent.MessageID);err!=nil{
-			log.Printf("Lead %d delivery receipt not saved: %v",lead.Number,err)
+		if err != nil {
+			log.Printf("Lead %d notify admin %d: %v", lead.Number, id, err)
+			continue
+		}
+		var sent struct {
+			MessageID int `json:"message_id"`
+		}
+		if err = json.Unmarshal(raw, &sent); err != nil {
+			log.Printf("Lead delivery message receipt: %v", err)
+		}
+		if err := b.leads.markDelivered(lead.UserID, lead.Number, id, sent.MessageID); err != nil {
+			log.Printf("Lead %d delivery receipt not saved: %v", lead.Number, err)
 		}
 	}
 }
@@ -526,26 +599,34 @@ func (b *Bot) notifyLeadAdmins(ctx context.Context, lead leadApplication) {
 // Only numeric ADMIN_IDS may take an application into work. Old callback
 // messages are safe to click again: the state transition is idempotent.
 func (b *Bot) handleLeadAdminCallback(ctx context.Context, cb *callbackQuery) error {
-	if cb==nil || cb.From.ID<=0 || !b.adminIDs[cb.From.ID] || cb.Message==nil || cb.Message.Chat.Type!="private" || cb.Message.Chat.ID!=cb.From.ID {
+	if cb == nil || cb.From.ID <= 0 || !b.adminIDs[cb.From.ID] || cb.Message == nil || cb.Message.Chat.Type != "private" || cb.Message.Chat.ID != cb.From.ID {
 		return nil
 	}
-	raw := strings.TrimPrefix(strings.TrimPrefix(cb.Data,"lead:take:"),"lead:done:")
-	number,err:=strconv.ParseInt(raw,10,64)
-	if err!=nil || number<=0 {return nil}
-	if strings.HasPrefix(cb.Data,"lead:take:") {
-		_,_,err=b.leads.takeInWork(number,cb.From.ID)
-		if err!=nil {return b.Send(withNavigation(ctx,cb.From.ID,cb.Message.MessageID),cb.From.ID,"Не удалось изменить статус заявки: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("⬅️ К заявкам","adm:leads")}))}
+	b.clearResolutionSession(cb.From.ID)
+	raw := strings.TrimPrefix(strings.TrimPrefix(cb.Data, "lead:take:"), "lead:done:")
+	number, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || number <= 0 {
+		return nil
 	}
-	lead,ok:=b.leads.byNumber(number)
-	if !ok {return nil}
-	b.refreshLeadAdminMessages(ctx,lead)
-	key:=strconv.FormatInt(cb.From.ID,10)
-	if lead.AdminMessages[key]!=cb.Message.MessageID {
+	if strings.HasPrefix(cb.Data, "lead:take:") {
+		_, _, err = b.leads.takeInWork(number, cb.From.ID)
+		if err != nil {
+			return b.Send(withNavigation(ctx, cb.From.ID, cb.Message.MessageID), cb.From.ID, "Не удалось изменить статус заявки: "+html.EscapeString(err.Error()), markup([]Button{callbackButton("⬅️ К заявкам", "adm:leads")}))
+		}
+	}
+	lead, ok := b.leads.byNumber(number)
+	if !ok {
+		return nil
+	}
+	b.refreshLeadAdminMessages(ctx, lead)
+	b.notifyCaseEvents(ctx, time.Now().UTC())
+	key := strconv.FormatInt(cb.From.ID, 10)
+	if lead.AdminMessages[key] != cb.Message.MessageID {
 		// Old notifications predate persistent message-ID tracking.
-		if _,err:=b.call(ctx,"editMessageReplyMarkup",map[string]any{
-			"chat_id":cb.From.ID,"message_id":cb.Message.MessageID,"reply_markup":adminLeadMarkup(lead),
-		});err!=nil && !strings.Contains(strings.ToLower(err.Error()),"message is not modified"){
-			log.Printf("Lead %d update clicked message: %v",number,err)
+		if _, err := b.call(ctx, "editMessageReplyMarkup", map[string]any{
+			"chat_id": cb.From.ID, "message_id": cb.Message.MessageID, "reply_markup": adminLeadMarkup(lead),
+		}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+			log.Printf("Lead %d update clicked message: %v", number, err)
 		}
 	}
 	return nil
@@ -554,45 +635,67 @@ func (b *Bot) handleLeadAdminCallback(ctx context.Context, cb *callbackQuery) er
 // Synchronize all copies of a notification after a lead is taken, regardless
 // of which administrative screen initiated the transition.
 func (b *Bot) refreshLeadAdminMessages(ctx context.Context, lead leadApplication) {
-	for id,mid:=range lead.AdminMessages {
-		adminID,err:=strconv.ParseInt(id,10,64)
-		if err!=nil || !b.adminIDs[adminID] || mid<=0 {continue}
-		if _,err=b.call(ctx,"editMessageReplyMarkup",map[string]any{
-			"chat_id":adminID,"message_id":mid,"reply_markup":adminLeadMarkup(lead),
-		});err!=nil && !strings.Contains(strings.ToLower(err.Error()),"message is not modified"){
-			log.Printf("Lead %d update admin %d: %v",lead.Number,adminID,err)
+	for id, mid := range lead.AdminMessages {
+		adminID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || !b.adminIDs[adminID] || mid <= 0 {
+			continue
+		}
+		if _, err = b.call(ctx, "editMessageText", map[string]any{"chat_id": adminID, "message_id": mid, "text": adminLeadText(lead), "parse_mode": "HTML", "link_preview_options": map[string]any{"is_disabled": true}, "reply_markup": adminLeadMarkup(lead)}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+			log.Printf("Lead %d refresh admin %d: %v", lead.Number, adminID, err)
 		}
 	}
 }
 
 func (b *Bot) retryPendingLeadNotifications(ctx context.Context) {
-	if b.leads==nil{return}
-	for _,lead:=range b.leads.allSubmitted(){b.notifyLeadAdmins(ctx,lead)}
+	if b.leads == nil {
+		return
+	}
+	for _, lead := range b.leads.visibleSubmitted() {
+		b.notifyLeadAdmins(ctx, lead)
+	}
+	b.notifyCaseEvents(ctx, time.Now().UTC())
 }
 
-func (b *Bot) showAdminLeads(ctx context.Context,chatID int64) error {
-	if b.leads==nil{return b.Send(ctx,chatID,"Хранилище заявок недоступно.",nil)}
-	all:=b.leads.visibleSubmitted()
-	var out strings.Builder
-	pending:=0
-	for _,lead:=range all{if !lead.TakenInWork {pending++}}
-	out.WriteString(fmt.Sprintf("📨 <b>Заявки</b>\nВсего: %d · Ожидают: %d\n",len(all),pending))
-	rows:=[][]Button{}
-	for i,lead:=range all {
-		if i>=10 {break}
-		status:="✅"
-		if !lead.TakenInWork {status="⏳"}
-		out.WriteString(fmt.Sprintf("\n%s <b>№%04d</b> · %s · %s",status,lead.Number,html.EscapeString(lead.Name),html.EscapeString(lead.LocationName)))
-		if !lead.TakenInWork {
-			rows=append(rows,[]Button{callbackButton(fmt.Sprintf("📥 №%04d · Взять в работу",lead.Number),fmt.Sprintf("adm:leadtake:%d",lead.Number))})
-		}else{
-            rows=append(rows,[]Button{callbackButton(fmt.Sprintf("🗑 Скрыть №%04d",lead.Number),fmt.Sprintf("adm:clean:one:l:%d",lead.Number))})
-        }
+func (b *Bot) showAdminLeads(ctx context.Context, chatID int64) error {
+	return b.showAdminLeadsPage(ctx, chatID, 0)
+}
+func (b *Bot) showAdminLeadsPage(ctx context.Context, chatID int64, page int) error {
+	if b.leads == nil {
+		return b.Send(ctx, chatID, "Хранилище заявок недоступно.", nil)
 	}
-	if len(all)==0 {out.WriteString("\n\nЗаявок пока нет.")}
-	rows=append(rows,[]Button{callbackButton("🗑 Выбрать заявки","adm:clean:start:l:a"),callbackButton("♻️ Корзина","adm:clean:start:l:t")})
-	rows=append(rows,[]Button{callbackButton("⬅️ Админ-панель","adm:menu")})
-	return b.Send(ctx,chatID,out.String(),markup(rows...))
+	all := b.leads.visibleSubmitted()
+	pages := max(1, (len(all)+7)/8)
+	page = max(0, min(page, pages-1))
+	pending, working, resolved := 0, 0, 0
+	for _, l := range all {
+		if l.isResolved() {
+			resolved++
+		} else if l.TakenInWork {
+			working++
+		} else {
+			pending++
+		}
+	}
+	text := fmt.Sprintf("📨 <b>Заявки</b>\nВсего: %d · Получено: %d · В работе: %d · Решено: %d\nСтраница %d/%d", len(all), pending, working, resolved, page+1, pages)
+	rows := [][]Button{}
+	for _, l := range all[page*8 : min((page+1)*8, len(all))] {
+		rows = append(rows, []Button{callbackButton(fmt.Sprintf("№%04d · %s · %s", l.Number, leadStatus(l), limitRunes(l.Name, 20)), fmt.Sprintf("adm:case:view:%d", l.Number))})
+	}
+	if len(all) == 0 {
+		text += "\n\nЗаявок пока нет."
+	}
+	nav := []Button{}
+	if page > 0 {
+		nav = append(nav, callbackButton("◀️ Назад", fmt.Sprintf("adm:case:list:%d", page-1)))
+	}
+	if page+1 < pages {
+		nav = append(nav, callbackButton("Далее ▶️", fmt.Sprintf("adm:case:list:%d", page+1)))
+	}
+	if len(nav) > 0 {
+		rows = append(rows, nav)
+	}
+	rows = append(rows, []Button{callbackButton("🗑 Выбрать заявки", "adm:clean:start:l:a"), callbackButton("♻️ Корзина", "adm:clean:start:l:t")}, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
+	return b.Send(ctx, chatID, text, markup(rows...))
 }
 
 // During polling, retry failed admin deliveries without creating duplicate
@@ -600,7 +703,7 @@ func (b *Bot) showAdminLeads(ctx context.Context,chatID int64) error {
 func (b *Bot) startLeadDeliveryRetry(ctx context.Context) {
 	b.retryPendingLeadNotifications(ctx)
 	go func() {
-		ticker := time.NewTicker(15 * time.Minute)
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
 			select {

@@ -213,6 +213,7 @@ func (b *Bot) visitorCallbackAction(data string) string {
  case data=="search" || strings.HasPrefix(data,"search:"):return "Поиск локации"
  case strings.HasPrefix(data,"compare:"):return "Сравнение локаций"
  case strings.HasPrefix(data,"lead:"):return "Форма заявки"
+ case strings.HasPrefix(data,"cab:"):return "Личный кабинет"
  case strings.HasPrefix(data,"loc:"):
   id:=strings.Split(strings.TrimPrefix(data,"loc:"),":")[0]
   if b.store!=nil{if l,ok:=b.store.Find(id);ok{return "Карточка: "+limitRunes(publicText(l.Title),65)}}
@@ -406,3 +407,4 @@ func (v *visitorStore) eraseHidden(ids []int64) error {
  if err:=v.saveLocked();err!=nil{v.users=prior;return err}
  return nil
 }
+

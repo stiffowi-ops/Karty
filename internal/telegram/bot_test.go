@@ -46,10 +46,12 @@ func TestNearestSortedAndWithoutCoordinates(t *testing.T) {
 func TestNearButtonIsInlineNotNative(t *testing.T) {
 	menu := startMenuMarkup(defaultProjectMapURL)
 	rows := menu["inline_keyboard"].([][]Button)
-	if len(rows) != 4 || len(rows[2]) != 1 || len(rows[3]) != 1 {
+	if len(rows) != 5 || len(rows[2]) != 1 || len(rows[3]) != 1 {
 		t.Fatalf("expected 2x2 menu with inline Nearby below: %+v", rows)
 	}
-	if rows[2][0]["callback_data"] != "lead:open:menu" { t.Fatalf("missing lead button above Nearby: %+v", rows[2][0]) }
+	if rows[2][0]["callback_data"] != "lead:open:menu" {
+		t.Fatalf("missing lead button above Nearby: %+v", rows[2][0])
+	}
 	if rows[3][0]["text"] != "📍 Рядом со мной" || rows[3][0]["callback_data"] != "near" {
 		t.Fatalf("Nearby button is not inline: %+v", rows[3][0])
 	}
@@ -116,7 +118,7 @@ func TestRichLocationCardUsesMetroAwareTitleAndNoImage(t *testing.T) {
 	shop := cardForLocation(catalog.Location{
 		ID: "002", Title: "Ашан Марфино", LineStatus: "Отдельная локация · без метро",
 		Landmarks: "д. Марфино, вл110 (данные проверить)",
-		Traffic: "Якорный АШАН", Payers: "Покупатели гипермаркета",
+		Traffic:   "Якорный АШАН", Payers: "Покупатели гипермаркета",
 		Opportunity: "Точка-резерв", Conclusion: "Резервная точка",
 	}, defaultProjectMapURL)
 	for _, section := range []string{
@@ -251,7 +253,9 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 		t.Fatalf("station card should be one rich message without photos: %v", tr.requests)
 	}
 	rich, ok := tr.card["rich_message"].(map[string]any)
-	if !ok { t.Fatalf("station rich content missing: %+v", tr.card) }
+	if !ok {
+		t.Fatalf("station rich content missing: %+v", tr.card)
+	}
 	text, _ := rich["html"].(string)
 	if !strings.Contains(text, "Тестовое описание") || !strings.Contains(text, "Открыть карту</a>") || strings.Count(text, "<details>") != 4 {
 		t.Fatalf("rich card, link or accordions missing: %+v", tr.card)
@@ -269,7 +273,6 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	}
 }
 
-
 func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed.json")
@@ -278,19 +281,30 @@ func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
 		stations = append(stations, catalog.Location{ID: id, Title: "Локация " + id})
 	}
 	raw, err := json.Marshal(stations)
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(seed, raw, 0600); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seed, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
 	store, err := catalog.New(filepath.Join(root, "runtime"), seed, filepath.Join(root, "overrides.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
-	for _, tc := range []struct{ page int; expected string }{
+	for _, tc := range []struct {
+		page     int
+		expected string
+	}{
 		{0, "📖 Страница 1 из 2"},
 		{1, "📖 Страница 2 из 2"},
 		{10, "📖 Страница 2 из 2"},
 		{-1, "📖 Страница 1 из 2"},
 	} {
-		if err := b.showPage(context.Background(), 123, tc.page); err != nil { t.Fatal(err) }
+		if err := b.showPage(context.Background(), 123, tc.page); err != nil {
+			t.Fatal(err)
+		}
 		text, _ := tr.card["text"].(string)
 		for _, want := range []string{
 			"<b>📍 Каталог локаций</b>",
@@ -311,20 +325,25 @@ func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
 func TestLocationsButtonAndLegacyTextOpenCatalog(t *testing.T) {
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed.json")
-	if err := os.WriteFile(seed, []byte(`[{"id":"001","title":"Метро Остров Мечты"}]`), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(seed, []byte(`[{"id":"001","title":"Метро Остров Мечты"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	store, err := catalog.New(filepath.Join(root, "runtime"), seed, filepath.Join(root, "overrides.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	tr := &captureTransport{}
-	b := &Bot{token:"TEST", store:store, http:&http.Client{Transport:tr}}
+	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
 	for _, label := range []string{"📋 Список локаций", "📋 Список станций"} {
-		msg := &message{Text:label, Chat:chat{ID:123,Type:"private"}, From:user{ID:456}}
-		if err := b.handle(context.Background(), update{Message:msg}); err != nil { t.Fatal(err) }
-		if got, _ := tr.card["text"].(string); !strings.Contains(got,"📍 Каталог локаций") {
-			t.Fatalf("button %q did not open catalog: %v",label,got)
+		msg := &message{Text: label, Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
+		if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := tr.card["text"].(string); !strings.Contains(got, "📍 Каталог локаций") {
+			t.Fatalf("button %q did not open catalog: %v", label, got)
 		}
 	}
 }
-
 
 func TestWelcomeHidesNumericCatalogSize(t *testing.T) {
 	text := welcomeText(user{})
@@ -332,7 +351,9 @@ func TestWelcomeHidesNumericCatalogSize(t *testing.T) {
 		t.Fatalf("friendly copy is missing: %q", text)
 	}
 	for _, old := range []string{"114 локаций", "116 локаций", "%!d"} {
-		if strings.Contains(text, old) { t.Fatalf("numeric count leaked into welcome: %q", text) }
+		if strings.Contains(text, old) {
+			t.Fatalf("numeric count leaked into welcome: %q", text)
+		}
 	}
 }
 
@@ -363,7 +384,9 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 		Chat: chat{ID: 123, Type: "private"},
 		From: user{ID: 456, FirstName: "Иван", LastName: "Иванов"},
 	}
-	if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+		t.Fatal(err)
+	}
 	if len(tr.payloads) != 2 {
 		t.Fatalf("expected temporary keyboard removal and inline menu, got %d messages", len(tr.payloads))
 	}
@@ -381,13 +404,15 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 		t.Fatalf("welcome must contain inline buttons only: %+v", markup)
 	}
 	rows, ok := markup["inline_keyboard"].([]any)
-	if !ok || len(rows) != 4 {
-		t.Fatalf("expected four rows (2x2 + lead + Nearby) in inline menu: %+v", markup)
+	if !ok || len(rows) != 5 {
+		t.Fatalf("expected five rows (2x2 + lead + Nearby + cabinet) in inline menu: %+v", markup)
 	}
 	assertButton := func(row, column int, label, dataType, data string) {
 		t.Helper()
 		buttons, ok := rows[row].([]any)
-		if !ok || column >= len(buttons) { t.Fatalf("missing button at %d/%d", row, column) }
+		if !ok || column >= len(buttons) {
+			t.Fatalf("missing button at %d/%d", row, column)
+		}
 		button, ok := buttons[column].(map[string]any)
 		if !ok || button["text"] != label || button[dataType] != data {
 			t.Fatalf("wrong button at %d/%d: %+v", row, column, button)
@@ -399,6 +424,7 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search:menu")
 	assertButton(2, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
 	assertButton(3, 0, "📍 Рядом со мной", "callback_data", "near")
+	assertButton(4, 0, "👤 Личный кабинет", "callback_data", "cab:home")
 	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
 		t.Fatalf("temporary reset message not deleted: %+v", tr.requests)
 	}
@@ -434,7 +460,9 @@ func TestNewAndLegacyMenuTextAliases(t *testing.T) {
 		tr := &captureTransport{}
 		b := &Bot{token: "TEST", http: &http.Client{Transport: tr}}
 		msg := &message{Text: label, Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}}
-		if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
+		if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+			t.Fatal(err)
+		}
 		text, _ := tr.card["text"].(string)
 		if !strings.Contains(text, "<b>Поиск локации</b>") {
 			t.Fatalf("search label %q did not open location search: %q", label, text)
@@ -446,13 +474,21 @@ func TestManualGeopositionStillShowsNearestLocations(t *testing.T) {
 	tr := &captureTransport{}
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed.json")
-	if err := os.WriteFile(seed, []byte("[]"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(seed, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	store, err := catalog.New(dir, seed, filepath.Join(dir, "overrides.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
 	msg := &message{Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}, Location: &geoPoint{Latitude: 55.75, Longitude: 37.61}}
-	if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
-	if len(tr.payloads) != 1 { t.Fatalf("expected one nearby result, got %d messages",len(tr.payloads)) }
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.payloads) != 1 {
+		t.Fatalf("expected one nearby result, got %d messages", len(tr.payloads))
+	}
 	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
 	if markup["keyboard"] != nil || markup["remove_keyboard"] != nil {
 		t.Fatalf("nearest-locations response must only contain inline navigation: %+v", markup)
@@ -465,27 +501,33 @@ func TestManualGeopositionStillShowsNearestLocations(t *testing.T) {
 func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", http: &http.Client{Transport: tr}}
-	if err := b.requestLocation(context.Background(), 123); err != nil { t.Fatal(err) }
-	if len(tr.payloads) != 2 { t.Fatalf("expected reset and instruction, got %d",len(tr.payloads)) }
+	if err := b.requestLocation(context.Background(), 123); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.payloads) != 2 {
+		t.Fatalf("expected reset and instruction, got %d", len(tr.payloads))
+	}
 	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if reset["remove_keyboard"] != true { t.Fatalf("legacy keyboard not removed: %+v",reset) }
+	if reset["remove_keyboard"] != true {
+		t.Fatalf("legacy keyboard not removed: %+v", reset)
+	}
 	message, _ := tr.payloads[1]["text"].(string)
-	if !strings.Contains(message,"Яндекс Карты") || !strings.Contains(message,"Скопировать ссылку") || !strings.Contains(message,"55.751, 37.618") {
-		t.Fatalf("instructions missing: %q",message)
+	if !strings.Contains(message, "Яндекс Карты") || !strings.Contains(message, "Скопировать ссылку") || !strings.Contains(message, "55.751, 37.618") {
+		t.Fatalf("instructions missing: %q", message)
 	}
-	if strings.Contains(message,"Telegram не позволяет запросить геопозицию") || strings.Contains(message,"Геопозиция не сохраняется в базе") || strings.Contains(message,"Бот покажет ближайшие точки") {
-		t.Fatalf("obsolete technical disclaimer remains: %q",message)
+	if strings.Contains(message, "Telegram не позволяет запросить геопозицию") || strings.Contains(message, "Геопозиция не сохраняется в базе") || strings.Contains(message, "Бот покажет ближайшие точки") {
+		t.Fatalf("obsolete technical disclaimer remains: %q", message)
 	}
-	kb,_ := tr.payloads[1]["reply_markup"].(map[string]any)
-	if _,ok:=kb["inline_keyboard"];!ok || kb["keyboard"]!=nil{
-		t.Fatalf("map link guide has wrong keyboard: %+v",kb)
+	kb, _ := tr.payloads[1]["reply_markup"].(map[string]any)
+	if _, ok := kb["inline_keyboard"]; !ok || kb["keyboard"] != nil {
+		t.Fatalf("map link guide has wrong keyboard: %+v", kb)
 	}
 	rawButtons, _ := json.Marshal(kb)
 	if !strings.Contains(string(rawButtons), "https://yandex.ru/maps/") {
-		t.Fatalf("Yandex Maps button missing: %+v",kb)
+		t.Fatalf("Yandex Maps button missing: %+v", kb)
 	}
-	if len(tr.requests)!=3 || tr.requests[2]!="/botTEST/deleteMessage" {
-		t.Fatalf("reset must be cleaned up: %+v",tr.requests)
+	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
+		t.Fatalf("reset must be cleaned up: %+v", tr.requests)
 	}
 }
 
@@ -512,7 +554,9 @@ func TestEmptyFavoritesProvidesStationShortcuts(t *testing.T) {
 		}
 	}
 	rows, _ := markup["inline_keyboard"].([]any)
-	if len(rows) != 3 { t.Fatalf("expected compact two-button row, lead, menu: %+v", rows) }
+	if len(rows) != 3 {
+		t.Fatalf("expected compact two-button row, lead, menu: %+v", rows)
+	}
 	first, _ := rows[0].([]any)
 	if len(first) != 2 {
 		t.Fatalf("location selection and search must share first row: %+v", rows)
@@ -559,14 +603,24 @@ func TestCardEmojiFitsTelegramLimit(t *testing.T) {
 func TestKlenovyBulvarCuratedCard(t *testing.T) {
 	root := t.TempDir()
 	seedPath := filepath.Join(root, "seed.json")
-	if err := os.WriteFile(seedPath, []byte(`[{"id":"002","title":"Метро Кленовый бульвар"}]`), 0600); err != nil { t.Fatal(err) }
-	store, err := catalog.NewWithBundled(filepath.Join(root,"runtime"), seedPath, filepath.Join(root,"overrides.json"))
-	if err != nil {t.Fatal(err)}
+	if err := os.WriteFile(seedPath, []byte(`[{"id":"002","title":"Метро Кленовый бульвар"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := catalog.NewWithBundled(filepath.Join(root, "runtime"), seedPath, filepath.Join(root, "overrides.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	l, ok := store.Find("002")
-	if !ok {t.Fatal("Кленовый бульвар missing")}
+	if !ok {
+		t.Fatal("Кленовый бульвар missing")
+	}
 	card := cardForLocation(l, "https://yandex.ru/maps/?um=constructor%3Amap")
 	for _, value := range []string{"<b>Метро Кленовый бульвар</b>", "Нагатино-Садовники", "Трафик и локация", "Кто платит", "Возможности для бизнеса", "Почему именно здесь", "без периода ожидания"} {
-		if !strings.Contains(card, value) { t.Fatalf("card missing %q",value) }
+		if !strings.Contains(card, value) {
+			t.Fatalf("card missing %q", value)
+		}
 	}
-	if strings.Contains(card, "КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ") { t.Fatal("obsolete banner must be absent") }
+	if strings.Contains(card, "КОПИРКА · КАРТА ЛОКАЦИЙ ДЛЯ ПАРТНЁРОВ") {
+		t.Fatal("obsolete banner must be absent")
+	}
 }

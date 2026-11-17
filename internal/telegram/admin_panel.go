@@ -996,6 +996,22 @@ func (b *Bot) reloadLeadsAfterRestore() error {
 }
 
 func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, data string) error {
+	if strings.HasPrefix(data, "adm:visitorfavs:") {
+		if !b.isAdmin(from.ID) || chatID != from.ID {
+			return nil
+		}
+		parts := strings.Split(data, ":")
+		if len(parts) != 4 {
+			return nil
+		}
+		id, err := strconv.ParseInt(parts[2], 10, 64)
+		page, e := strconv.Atoi(parts[3])
+		if err != nil || e != nil || id <= 0 {
+			return nil
+		}
+		return b.showVisitorFavorites(ctx, chatID, id, page)
+	}
+
 	if !b.isAdmin(from.ID) || chatID != from.ID {
 		return nil
 	}

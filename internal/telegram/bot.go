@@ -43,6 +43,7 @@ type Bot struct {
  adminMu sync.Mutex
  backupMu sync.Mutex
  adminStates map[int64]*adminSession
+ visitors *visitorStore
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -130,9 +131,11 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 	}
  metrics, err := analytics.Open(filepath.Join(dataDir,"analytics.jsonl"))
  if err != nil {return nil,err}
+ visitors, err := openVisitorStore(filepath.Join(dataDir,"visitors.json"))
+ if err != nil {return nil,err}
 	return &Bot{
 		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
-		adminIDs: ids, leads: leads, metrics:metrics, http: &http.Client{Timeout: 50 * time.Second},
+		adminIDs: ids, leads: leads, metrics:metrics, visitors: visitors, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
 		compareSelections: make(map[int64][]string),
 	}, nil
@@ -803,6 +806,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
 	}
 	if u.Callback != nil {
+  if u.Callback.Message != nil && u.Callback.Message.Chat.Type == "private" && u.Callback.Message.Chat.ID == u.Callback.From.ID && !strings.HasPrefix(u.Callback.Data,"adm:") {
+   b.observeVisitor(u.Callback.From,b.visitorCallbackAction(u.Callback.Data),false)
+  }
   if strings.HasPrefix(u.Callback.Data,"lead:take:") || strings.HasPrefix(u.Callback.Data,"lead:done:") {
     b.answerCallback(ctx,u.Callback.ID)
     return b.handleLeadAdminCallback(ctx,u.Callback)
@@ -951,6 +957,29 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if input == "" {
 		return nil
 	}
+ // Track navigation labels, never store raw user-entered text or phone numbers.
+ cmdForVisitor:=strings.SplitN(strings.ToLower(input)," ",2)[0]
+ if cmdForVisitor=="/start" || strings.HasPrefix(cmdForVisitor,"/start@") {
+  b.observeVisitor(m.From,"Главное меню",true)
+ } else if strings.HasPrefix(input,"/") {
+  switch cmdForVisitor{
+   case "/list":b.observeVisitor(m.From,"Список локаций",false)
+   case "/favorites":b.observeVisitor(m.From,"Избранное",false)
+   case "/near":b.observeVisitor(m.From,"Рядом со мной",false)
+   case "/map":b.observeVisitor(m.From,"Карта локаций",false)
+   case "/compare":b.observeVisitor(m.From,"Сравнение локаций",false)
+  }
+ } else {
+  label:="Поиск локации"
+  if b.leads!=nil {if _,draft:=b.leads.draft(m.From.ID);draft{label="Форма заявки"}}
+  switch input {
+   case "📋 Список локаций","📋 Список станций":label="Список локаций"
+   case "⭐ Избранное":label="Избранное"
+   case "📝 Оставить заявку":label="Форма заявки"
+   case "🏠 Главное меню":label="Главное меню"
+  }
+  b.observeVisitor(m.From,label,false)
+ }
 	switch input {
 	case "📋 Список локаций", "📋 Список станций":
 		return b.showPage(ctx, chatID, 0)
@@ -1104,6 +1133,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	b.startLeadDeliveryRetry(ctx)
  go b.autoBackupLoop(ctx)
+ go b.visitorMonitor(ctx)
 	// Only /start is shown in Telegram's command picker. All other
 	// user and administrator workflows remain accessible through bot buttons.
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{

@@ -26,7 +26,7 @@ const effectiveFile = "catalog_effective.json"
 const cardsFile = "admin_cards.json"
 const adminLocationsFile = catalog.AdminLocationsFilename
 
-var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", cardsFile, adminLocationsFile}
+var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", "visitors.json", cardsFile, adminLocationsFile}
 
 type Manifest struct {
 	Schema    int               `json:"schema"`
@@ -219,6 +219,9 @@ func Examine(raw []byte) (Archive, error) {
 	if _, err := parseLeads(files["leads.json"]); err != nil {
 		return Archive{}, fmt.Errorf("invalid applications: %w", err)
 	}
+	if raw,ok:=files["visitors.json"];ok {
+		if _,err:=parseVisitors(raw);err!=nil{return Archive{},fmt.Errorf("invalid visitors: %w",err)}
+	}
 	if _, err := mergeAnalytics(files["analytics.jsonl"], nil); err != nil {
 		return Archive{}, fmt.Errorf("invalid analytics: %w", err)
 	}
@@ -376,6 +379,15 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 			return path, err
 		}
 		replacement["leads.json"] = protectedLeads
+		// Visitors are optional in older archives. Preserve all recent
+		// visitors and deduplicate alerts when restoring older data.
+		if archivedVisitors,exists:=archive.Contents["visitors.json"];exists{
+			currentVisitors,err:=os.ReadFile(filepath.Join(root,"visitors.json"))
+			if err!=nil && !errors.Is(err,os.ErrNotExist){return path,err}
+			combined,err:=mergeVisitors(archivedVisitors,currentVisitors)
+			if err!=nil{return path,err}
+			replacement["visitors.json"]=combined
+		}
 		currentAnalytics, err := os.ReadFile(filepath.Join(root, "analytics.jsonl"))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return path, err

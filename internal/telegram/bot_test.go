@@ -214,7 +214,7 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	switch req.URL.Path {
-	case "/botTEST/sendMessage":
+	case "/botTEST/sendMessage", "/botTEST/sendRichMessage":
 		var payload map[string]any
 		if err = json.Unmarshal(raw, &payload); err != nil {
 			return nil, err
@@ -246,19 +246,21 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 	if err := b.showLocation(context.Background(), 123, 456, "017", 2); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.requests) != 1 || tr.requests[0] != "/botTEST/sendMessage" {
-		t.Fatalf("station card should be sent as one text message without photos: %v", tr.requests)
+	if len(tr.requests) != 1 || tr.requests[0] != "/botTEST/sendRichMessage" {
+		t.Fatalf("station card should be one rich message without photos: %v", tr.requests)
 	}
-	text, ok := tr.card["text"].(string)
-	if !ok || !strings.Contains(text, "Тестовое описание") || !strings.Contains(text, "<a href=\"https://yandex.ru/maps/?um=constructor%3Atest&amp;source=constructorLink\">Открыть карту</a>") {
-		t.Fatalf("station text or project map link missing: %+v", tr.card)
+	rich, ok := tr.card["rich_message"].(map[string]any)
+	if !ok { t.Fatalf("station rich content missing: %+v", tr.card) }
+	text, _ := rich["html"].(string)
+	if !strings.Contains(text, "Тестовое описание") || !strings.Contains(text, "Открыть карту</a>") || strings.Count(text, "<details>") != 4 {
+		t.Fatalf("rich card, link or accordions missing: %+v", tr.card)
 	}
 	kb, ok := tr.card["reply_markup"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing keyboard: %+v", tr.card)
 	}
 	keyboardBytes, _ := json.Marshal(kb)
-	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "switch_inline_query_current_chat") || !strings.Contains(string(keyboardBytes), "menu") {
+	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "switch_inline_query_current_chat") || !strings.Contains(string(keyboardBytes), "menu") || !strings.Contains(string(keyboardBytes), "Перейти в избранное") {
 		t.Fatalf("missing nav buttons: %s", keyboardBytes)
 	}
 	if !strings.Contains(string(keyboardBytes), "fav:toggle:017:2") || !strings.Contains(string(keyboardBytes), "Добавить в избранное") {

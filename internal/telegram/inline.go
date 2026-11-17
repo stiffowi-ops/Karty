@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -78,70 +79,104 @@ func inlineAnyWordStarts(name, prefix string) bool {
 	return false
 }
 
-func (b *Bot) answerLocationInlineQuery(ctx context.Context, query *inlineQuery) error {
-	if query == nil || query.ID == "" { return nil }
-	results := make([]map[string]any, 0, inlineLocationLimit)
-	if b.store != nil {
-		for _, raw := range inlineLocationMatches(b.store.List(), query.Query, inlineLocationLimit) {
-			loc := publicLocation(raw)
-			if !catalog.ValidID(loc.ID) || len("fav:inline:"+loc.ID) > 64 { continue }
-			rows := make([][]Button, 0, 3)
-			if link := stationMapLink(loc, b.mapURL); link != "" {
-				rows = append(rows, []Button{urlButton("🗺 Открыть на карте", link)})
-			}
-			// Inline results can be shared in groups; favorite actions belong
-			// to the user clicking, so the label remains neutral.
-			rows = append(rows,
-				[]Button{callbackButton("⭐ Сохранить / убрать из избранного", "fav:inline:"+loc.ID)},
-				[]Button{inlineSearchButton()},
-			)
-			description := strings.TrimSpace(loc.Landmarks)
-			if description == "" { description = strings.TrimSpace(loc.LineStatus) }
-			if description == "" { description = "Открыть описание и точку на карте" }
-			results = append(results, map[string]any{
-				"type": "article",
-				"id": "karty:" + loc.ID,
-				"title": loc.Title,
-				"description": limitRunes(description, 125),
-				"input_message_content": map[string]any{
-					"message_text": cardForLocation(loc, b.mapURL),
-					"parse_mode": "HTML",
-					"link_preview_options": map[string]any{"is_disabled": true},
-				},
-				"reply_markup": markup(rows...),
-			})
-		}
-	}
-	_, err := b.call(ctx, "answerInlineQuery", map[string]any{
-		"inline_query_id": query.ID,
-		"results": results,
-		"cache_time": 0,
-		"is_personal": true,
-		"next_offset": "",
-	})
-	return err
+// Inline result navigation is private, because favorites are personal.
+func inlineLocationRows(id string, saved bool) [][]Button {
+ label := "⭐ Добавить в избранное"
+ if saved { label = "✅ Убрать из избранного" }
+ return [][]Button{
+  {callbackButton(label, "fav:inline:"+id)},
+  {callbackButton("⭐ Перейти в избранное","inline:nav:favorites"),callbackButton("🏠 Главное меню","inline:nav:menu")},
+  {inlineSearchButton()},
+ }
 }
 
-// Inline-mode callbacks do not necessarily have a Message or chat ID.
-// A toast confirms the action; no chat lookup is needed.
+func (b *Bot) answerLocationInlineQuery(ctx context.Context, query *inlineQuery) error {
+ if query == nil || query.ID == "" { return nil }
+ results := make([]map[string]any, 0, inlineLocationLimit)
+ if b.store != nil {
+  for _, raw := range inlineLocationMatches(b.store.List(), query.Query, inlineLocationLimit) {
+   loc := publicLocation(raw)
+   if !catalog.ValidID(loc.ID) || len("fav:inline:"+loc.ID) > 64 { continue }
+   description := strings.TrimSpace(loc.Landmarks)
+   if description == "" { description = strings.TrimSpace(loc.LineStatus) }
+   if description == "" { description = "Открыть карточку локации" }
+   saved := b.favorites != nil && b.favorites.Contains(query.From.ID, loc.ID)
+   results = append(results, map[string]any{
+    "type":"article", "id":"karty:"+loc.ID, "title":loc.Title,
+    "description":limitRunes(description,125),
+    "input_message_content": map[string]any{
+     "rich_message": map[string]any{"html":richLocationHTML(loc,b.mapURL)},
+    },
+    "reply_markup":markup(inlineLocationRows(loc.ID,saved)...),
+   })
+  }
+ }
+ _,err:=b.call(ctx,"answerInlineQuery",map[string]any{
+  "inline_query_id":query.ID, "results":results, "cache_time":0,
+  "is_personal":true, "next_offset":"",
+ })
+ return err
+}
+
+func (b *Bot) replyInlineCallback(ctx context.Context, callback *callbackQuery, text string) error {
+ _,err:=b.call(ctx,"answerCallbackQuery",map[string]any{
+  "callback_query_id":callback.ID, "text":text, "show_alert":false,
+ })
+ return err
+}
+
+// The inline result belongs to the user's message, not a bot-owned chat
+// message. Edit its inline markup when Telegram supplies inline_message_id.
+// Shared group cards do not expose personal favorites state to others.
 func (b *Bot) toggleInlineFavorite(ctx context.Context, callback *callbackQuery) error {
-	if callback == nil { return nil }
-	id := strings.TrimPrefix(callback.Data, "fav:inline:")
-	text := "Не удалось обновить избранное."
-	if b.store != nil && b.favorites != nil && catalog.ValidID(id) && callback.From.ID > 0 {
-		if _, exists := b.store.Find(id); exists {
-			added, err := b.favorites.Toggle(callback.From.ID, id)
-			if err == nil {
-				if added { text = "⭐ Локация добавлена в избранное" } else { text = "✅ Локация убрана из избранного" }
-			}
-		} else {
-			text = fmt.Sprintf("Локация %s больше не найдена", id)
-		}
-	}
-	_, err := b.call(ctx, "answerCallbackQuery", map[string]any{
-		"callback_query_id": callback.ID,
-		"text": text,
-		"show_alert": false,
-	})
-	return err
+ if callback==nil {return nil}
+ id:=strings.TrimPrefix(callback.Data,"fav:inline:")
+ if b.store==nil || b.favorites==nil || !catalog.ValidID(id) || callback.From.ID<=0 {
+  return b.replyInlineCallback(ctx,callback,"Не удалось обновить избранное.")
+ }
+ if _,ok:=b.store.Find(id);!ok {
+  return b.replyInlineCallback(ctx,callback,fmt.Sprintf("Локация %s больше не найдена",id))
+ }
+ saved,err:=b.favorites.Toggle(callback.From.ID,id)
+ if err!=nil{return b.replyInlineCallback(ctx,callback,"Не удалось обновить избранное.")}
+ // Telegram may supply inline_message_id without callback.Message even in
+ // private chats. Updating a shared card changes only its button label; the
+ // personal favorites list is never sent into that chat.
+ rows:=markup(inlineLocationRows(id,saved)...)
+ payload:=map[string]any{"reply_markup":rows}
+ if callback.InlineMessageID!="" {
+  payload["inline_message_id"]=callback.InlineMessageID
+ }else if callback.Message!=nil && callback.Message.MessageID>0{
+  payload["chat_id"]=callback.Message.Chat.ID
+  payload["message_id"]=callback.Message.MessageID
+ }
+ if len(payload)>1 {
+  if _,editErr:=b.call(ctx,"editMessageReplyMarkup",payload);editErr!=nil {
+   log.Printf("Inline favorite keyboard update failed: %v",editErr)
+  }
+ }
+ if saved {return b.replyInlineCallback(ctx,callback,"⭐ Добавлено в избранное")}
+ return b.replyInlineCallback(ctx,callback,"✅ Убрано из избранного")
+}
+
+func (b *Bot) inlineNavigate(ctx context.Context, callback *callbackQuery) error {
+ if callback==nil{return nil}
+ if callback.From.ID<=0{return b.replyInlineCallback(ctx,callback,"Не удалось открыть раздел.")}
+ // Inline callbacks often have only inline_message_id. Always deliver
+ // personal sections to the caller's private chat, never to the source group.
+ chatID:=callback.From.ID
+ var err error
+ switch callback.Data {
+ case "inline:nav:favorites":
+  err=b.showFavorites(ctx,chatID,callback.From.ID)
+ case "inline:nav:menu":
+  err=b.welcome(ctx,chatID,callback.From)
+ default:
+  return b.replyInlineCallback(ctx,callback,"Раздел не найден.")
+ }
+ if err!=nil {
+  log.Printf("Inline navigation to private chat failed: %v",err)
+  return b.replyInlineCallback(ctx,callback,"Открой личный чат с ботом и нажми /start.")
+ }
+ return b.replyInlineCallback(ctx,callback,"Открыл в личном чате ✅")
 }

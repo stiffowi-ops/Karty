@@ -49,10 +49,14 @@ func TestInlineQuerySendsLocationCard(t *testing.T){
  res:=results[0].(map[string]any)
  if res["id"]!="karty:001"||res["type"]!="article"{t.Fatalf("bad inline article: %+v",res)}
  content:=res["input_message_content"].(map[string]any)
- card:=content["message_text"].(string)
- if !strings.Contains(card,"<b>Метро Академика Черенкова</b>")||!strings.Contains(card,"Жители района")||!strings.Contains(card,"Открыть карту"){t.Fatalf("incomplete card: %s",card)}
+ rich:=content["rich_message"].(map[string]any)
+ card:=rich["html"].(string)
+ if !strings.Contains(card,"Метро Академика Черенкова")||!strings.Contains(card,"Жители района")||!strings.Contains(card,"Открыть карту")||strings.Count(card,"<details>")!=4{t.Fatalf("incomplete rich card: %s",card)}
  kb,_:=json.Marshal(res["reply_markup"])
- if !strings.Contains(string(kb),"fav:inline:001")||!strings.Contains(string(kb),"switch_inline_query_current_chat"){t.Fatalf("inline buttons missing: %s",kb)}
+ for _,want:=range []string{"fav:inline:001","Добавить в избранное","Перейти в избранное","inline:nav:favorites","inline:nav:menu","switch_inline_query_current_chat"} {
+  if !strings.Contains(string(kb),want){t.Fatalf("missing %q in inline keyboard: %s",want,kb)}
+ }
+ if strings.Contains(string(kb),"🗺 Открыть на карте"){t.Fatalf("duplicate map button: %s",kb)}
 }
 func TestInlineFavoriteWithoutChatMessage(t *testing.T){
  b,tr:=makeInlineTestBot(t)
@@ -62,4 +66,27 @@ func TestInlineFavoriteWithoutChatMessage(t *testing.T){
  if tr.calls[0]!="/botTEST/answerCallbackQuery"{t.Fatalf("wrong callback path: %v",tr.calls)}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
  if b.favorites.Contains(77,"001"){t.Fatal("inline favorite not removed")}
+}
+
+func TestInlineFavoriteChangesButtonLabel(t *testing.T) {
+ b,tr:=makeInlineTestBot(t)
+ cb:=&callbackQuery{ID:"clicked",Data:"fav:inline:001",From:user{ID:77},InlineMessageID:"inline-message-123"}
+ if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
+ if !b.favorites.Contains(77,"001"){t.Fatal("favorite not added")}
+ if len(tr.calls)!=2 || tr.calls[0]!="/botTEST/editMessageReplyMarkup" || tr.calls[1]!="/botTEST/answerCallbackQuery" {
+  t.Fatalf("inline favorite did not update keyboard: %v",tr.calls)
+ }
+ if err:=b.handle(context.Background(),update{InlineQuery:&inlineQuery{ID:"lookup2",From:user{ID:77},Query:"академика"}});err!=nil{t.Fatal(err)}
+ results:=tr.payload["results"].([]any)
+ kb,_:=json.Marshal(results[0].(map[string]any)["reply_markup"])
+ if !strings.Contains(string(kb),"Убрать из избранного"){t.Fatalf("saved favorite not reflected in fresh results: %s",kb)}
+}
+
+func TestInlineNavigationOpensPersonalChat(t *testing.T) {
+ b,tr:=makeInlineTestBot(t)
+ cb:=&callbackQuery{ID:"nav",Data:"inline:nav:favorites",From:user{ID:77},InlineMessageID:"inline-123"}
+ if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
+ if len(tr.calls)<3 || tr.calls[0]!="/botTEST/sendMessage" || tr.calls[1]!="/botTEST/sendMessage" || tr.calls[len(tr.calls)-1]!="/botTEST/answerCallbackQuery"{
+  t.Fatalf("navigation must open the user's private chat, not edit inline result: %v",tr.calls)
+ }
 }

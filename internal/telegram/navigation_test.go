@@ -47,6 +47,9 @@ func TestNavigationEditsSingleBotMessageAcrossTabs(t *testing.T){
   if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatalf("callback %s: %v",tc.cb,err)}
   if len(tr.calls)<2||tr.calls[len(tr.calls)-1]!="/botTEST/editMessageText"{t.Fatalf("callback %s failed edit: %v",tc.cb,tr.calls)}
   value,_:=tr.payload["text"].(string)
+  if rich,ok:=tr.payload["rich_message"].(map[string]any);ok{
+   value,_=rich["html"].(string)
+  }
   if !strings.Contains(value,tc.want){t.Fatalf("callback %s missing %q: %q",tc.cb,tc.want,value)}
   if tr.payload["message_id"]!=float64(500){t.Fatalf("edited wrong message: %+v",tr.payload)}
  }

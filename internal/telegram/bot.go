@@ -56,10 +56,11 @@ type message struct {
 	Location  *geoPoint `json:"location"`
 }
 type callbackQuery struct {
-	ID      string   `json:"id"`
-	Data    string   `json:"data"`
-	From    user     `json:"from"`
-	Message *message `json:"message"`
+	ID              string   `json:"id"`
+	Data            string   `json:"data"`
+	From            user     `json:"from"`
+	Message         *message `json:"message"`
+	InlineMessageID string   `json:"inline_message_id"`
 }
 type update struct {
 	UpdateID int64          `json:"update_id"`
@@ -465,13 +466,8 @@ func (b *Bot) showLocation(ctx context.Context, chatID, userID int64, id string,
 	if !found {
 		return b.Send(ctx, chatID, "Локация не найдена. Открой список локаций.", markup(locationBackRows(backPage)...))
 	}
-	card := cardForLocation(l, b.mapURL)
-	favoriteLabel := "⭐ Добавить в избранное"
-	if b.favorites.Contains(userID, id) {
-		favoriteLabel = "✅ Убрать из избранного"
-	}
-	rows := append([][]Button{{callbackButton(favoriteLabel, fmt.Sprintf("fav:toggle:%s:%d", id, backPage))}}, locationBackRows(backPage)...)
-	return b.Send(ctx, chatID, card, markup(rows...))
+	saved := b.favorites != nil && b.favorites.Contains(userID, id)
+	return b.sendRichLocation(ctx, chatID, l, markup(regularCardRows(id, backPage, saved)...))
 }
 
 func (b *Bot) favoriteLocations(userID int64) []catalog.Location {
@@ -748,6 +744,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if u.Callback != nil {
 		if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
 			return b.toggleInlineFavorite(ctx, u.Callback)
+		}
+		if strings.HasPrefix(u.Callback.Data, "inline:nav:") {
+			return b.inlineNavigate(ctx, u.Callback)
 		}
 		b.answerCallback(ctx, u.Callback.ID)
 		if u.Callback.Message == nil {

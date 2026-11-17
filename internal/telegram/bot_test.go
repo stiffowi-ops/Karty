@@ -53,12 +53,17 @@ func TestRequestLocationButton(t *testing.T) {
 			Text            string `json:"text"`
 			RequestLocation bool   `json:"request_location"`
 		} `json:"keyboard"`
+		IsPersistent bool `json:"is_persistent"`
+		OneTime bool `json:"one_time_keyboard"`
 	}
 	if err = json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Keyboard) == 0 || len(payload.Keyboard[0]) == 0 || !payload.Keyboard[0][0].RequestLocation {
-		t.Fatal("no Telegram native location button")
+	if len(payload.Keyboard) != 1 || len(payload.Keyboard[0]) != 1 || !payload.Keyboard[0][0].RequestLocation || payload.Keyboard[0][0].Text != "📍 Рядом со мной" {
+		t.Fatalf("expected native request_location main button: %+v", payload)
+	}
+	if !payload.IsPersistent || payload.OneTime {
+		t.Fatalf("location keyboard should stay visible: %+v", payload)
 	}
 }
 func TestHaversine(t *testing.T) {
@@ -320,7 +325,7 @@ func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
 	}
 }
 
-func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
+func TestStartCommandSendsInlineMainMenuAndNativeLocationKeyboard(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
 	msg := &message{
@@ -332,13 +337,9 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tr.payloads) != 2 {
-		t.Fatalf("expected temporary keyboard reset and welcome, got %d messages", len(tr.payloads))
+		t.Fatalf("expected inline welcome + native location keyboard, got %d messages", len(tr.payloads))
 	}
-	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if reset["remove_keyboard"] != true {
-		t.Fatalf("old persistent keyboard not removed: %+v", reset)
-	}
-	welcome := tr.payloads[1]
+	welcome := tr.payloads[0]
 	welcomeText, _ := welcome["text"].(string)
 	if !strings.Contains(welcomeText, "Привет, Иван Иванов!") {
 		t.Fatalf("personalized welcome missing: %+v", welcome["text"])
@@ -348,8 +349,8 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 		t.Fatalf("welcome should use inline-only buttons: %+v", markup)
 	}
 	rows, ok := markup["inline_keyboard"].([]any)
-	if !ok || len(rows) != 3 {
-		t.Fatalf("expected 3 rows in inline menu: %+v", markup)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("expected 2 rows in 2x2 inline menu: %+v", markup)
 	}
 	assertButton := func(row, column int, label, dataType, data string) {
 		t.Helper()
@@ -366,12 +367,21 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
 	assertButton(1, 1, "🔎 Поиск локации", "switch_inline_query_current_chat", "")
-	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
-	if lastRow, _ := rows[2].([]any); len(lastRow) != 1 {
-		t.Fatalf("nearby button should be alone in last row: %+v", lastRow)
+	geoMsg := tr.payloads[1]
+	locationKb, ok := geoMsg["reply_markup"].(map[string]any)
+	if !ok || locationKb["is_persistent"] != true || locationKb["one_time_keyboard"] != false {
+		t.Fatalf("expected persistent native reply keyboard: %+v", geoMsg)
 	}
-	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
-		t.Fatalf("temporary keyboard-reset message not cleaned up: %+v", tr.requests)
+	native, _ := locationKb["keyboard"].([]any)
+	if len(native) != 1 { t.Fatalf("native keyboard missing: %+v", locationKb) }
+	row, _ := native[0].([]any)
+	if len(row) != 1 { t.Fatalf("native location button missing: %+v", locationKb) }
+	button, _ := row[0].(map[string]any)
+	if button["text"] != "📍 Рядом со мной" || button["request_location"] != true {
+		t.Fatalf("location button is not requesting location: %+v", button)
+	}
+	if len(tr.requests) != 2 || tr.requests[0] != "/botTEST/sendMessage" || tr.requests[1] != "/botTEST/sendMessage" {
+		t.Fatalf("unexpected extra message / keyboard reset: %+v", tr.requests)
 	}
 }
 
@@ -413,9 +423,9 @@ func TestNewAndLegacyMenuTextAliases(t *testing.T) {
 	}
 }
 
-func TestLocationRequestAndReplyKeyboardRemoval(t *testing.T) {
+func TestLocationRequestKeepsNativeKeyboardVisible(t *testing.T) {
 	keyboard, _ := json.Marshal(mainKeyboard())
-	for _, text := range []string{"request_location", "📍 Отправить геопозицию", "🏠 Главное меню", "one_time_keyboard"} {
+	for _, text := range []string{"request_location", "📍 Рядом со мной", "is_persistent", "one_time_keyboard"} {
 		if !strings.Contains(string(keyboard), text) {
 			t.Fatalf("location request lost %q: %s", text, keyboard)
 		}
@@ -435,12 +445,15 @@ func TestLocationRequestAndReplyKeyboardRemoval(t *testing.T) {
 	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.payloads) != 2 {
-		t.Fatalf("expected keyboard removal and nearby results, got %d messages", len(tr.payloads))
+	if len(tr.payloads) != 1 {
+		t.Fatalf("expected a single nearest-locations message, got %d", len(tr.payloads))
 	}
 	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if markup["remove_keyboard"] != true {
-		t.Fatalf("location response must hide native keyboard, got %+v", markup)
+	if markup["remove_keyboard"] == true {
+		t.Fatalf("location response must preserve native keyboard, got %+v", markup)
+	}
+	if _, ok := markup["inline_keyboard"]; !ok {
+		t.Fatalf("nearest-locations response lost navigation: %+v", markup)
 	}
 }
 

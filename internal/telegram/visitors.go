@@ -43,6 +43,7 @@ type visitorProfile struct {
  Daily map[string]int `json:"daily,omitempty"`
  HasLead bool `json:"has_lead,omitempty"`
  Alerted bool `json:"alerted,omitempty"`
+ Hidden bool `json:"hidden,omitempty"`
  AlertRecipients map[string]bool `json:"alert_recipients,omitempty"`
 }
 
@@ -191,7 +192,7 @@ func (v *visitorStore) find(id int64) (visitorProfile,bool) {
 func (v *visitorStore) due(now time.Time) []visitorProfile {
  out:=[]visitorProfile{}
  for _,p:=range v.snapshot(){
-  if !p.Alerted && !p.HasLead && !p.FirstAt.IsZero() && !now.Before(p.FirstAt.Add(visitorAlertDelay)){
+  if !p.Hidden && !p.Alerted && !p.HasLead && !p.FirstAt.IsZero() && !now.Before(p.FirstAt.Add(visitorAlertDelay)){
    out=append(out,p)
   }
  }
@@ -200,6 +201,7 @@ func (v *visitorStore) due(now time.Time) []visitorProfile {
 
 func (b *Bot) observeVisitor(u user,action string,isStart bool) {
  if b.visitors==nil || u.ID<=0 || b.isAdmin(u.ID){return}
+ if b.isPermanentlyDeletedVisitor(u.ID){return}
  if err:=b.visitors.record(u,action,isStart,time.Now());err!=nil{log.Printf("visitor tracking: %v",err)}
 }
 func (b *Bot) visitorCallbackAction(data string) string {
@@ -265,6 +267,7 @@ func (b *Bot) sendVisitorAlerts(ctx context.Context,now time.Time) {
  for id:=range b.adminIDs{admins=append(admins,id)}
  sort.Slice(admins,func(i,j int)bool{return admins[i]<admins[j]})
  for _,candidate:=range b.visitors.due(now) {
+  if b.isPermanentlyDeletedVisitor(candidate.UserID){continue}
   if b.visitorHasApplication(candidate.UserID) {
    if err:=b.visitors.markLead(candidate.UserID);err!=nil{log.Printf("visitor lead state: %v",err)}
    continue
@@ -272,10 +275,10 @@ func (b *Bot) sendVisitorAlerts(ctx context.Context,now time.Time) {
   // Reload from storage before each attempt, so state changed by a form
   // submission is observed even while the monitor is running.
   fresh,ok:=b.visitors.find(candidate.UserID)
-  if !ok || fresh.HasLead || fresh.Alerted{continue}
+  if !ok || fresh.Hidden || fresh.HasLead || fresh.Alerted{continue}
   for _,adminID:=range admins {
    fresh,ok=b.visitors.find(candidate.UserID)
-   if !ok || fresh.HasLead || fresh.Alerted{break}
+   if !ok || fresh.Hidden || fresh.HasLead || fresh.Alerted{break}
    if fresh.AlertRecipients[strconv.FormatInt(adminID,10)]{continue}
    message:="🔔 <b>Посетитель без заявки · прошло 60 минут</b>\n\n"+visitorHTML(fresh,now)
    _,err:=b.call(ctx,"sendMessage",map[string]any{
@@ -316,6 +319,7 @@ func (b *Bot) showVisitorsPage(ctx context.Context,chatID int64,mode string,page
  cutoff:=now.AddDate(0,0,-7)
  filtered:=make([]visitorProfile,0,len(users))
  for _,p:=range users {
+  if p.Hidden{continue}
   hasLead:=p.HasLead || b.visitorHasApplication(p.UserID)
   if hasLead {p.HasLead=true}
   if !p.LastAt.Before(cutoff){unique7++;if hasLead{withLead++}else{noLead++}}
@@ -341,19 +345,64 @@ func (b *Bot) showVisitorsPage(ctx context.Context,chatID int64,mode string,page
  if page>0{nav=append(nav,callbackButton("◀️ Назад",fmt.Sprintf("adm:visitors:%s:%d",mode,page-1)))}
  if page+1<pages{nav=append(nav,callbackButton("Далее ▶️",fmt.Sprintf("adm:visitors:%s:%d",mode,page+1)))}
  if len(nav)>0{rows=append(rows,nav)}
+ rows=append(rows,[]Button{callbackButton("🗑 Выбрать посетителей","adm:clean:start:v:a"),callbackButton("♻️ Корзина","adm:clean:start:v:t")})
  rows=append(rows,[]Button{callbackButton("⬅️ Админ-панель","adm:menu")})
  title:="Без заявки";if mode=="all"{title="Все посетители"}
  return b.Send(ctx,chatID,fmt.Sprintf("👥 <b>Посетители</b>\n\nЗа последние 7 дней:\nУникальные: %d\nБез заявки: %d\nС заявкой: %d\nВизитов сегодня: %d\n\nРаздел: <b>%s</b> · %d записей · стр. %d/%d\n\nПовторные визиты обновляют счётчики, но не вызывают новый аларм.\n\nВизитом считается действие после 30 минут бездействия или повторный /start с интервалом от 5 минут. Пассивное открытие чата Telegram не показывает.",unique7,noLead,withLead,visitsToday,title,len(filtered),page+1,pages),markup(rows...))
 }
 func (b *Bot) showVisitor(ctx context.Context,chatID,userID int64) error {
  p,ok:=b.visitors.find(userID)
- if !ok{return b.Send(ctx,chatID,"Посетитель не найден.",markup([]Button{callbackButton("⬅️ Посетители","adm:visitors")}))}
+ if !ok || p.Hidden{return b.Send(ctx,chatID,"Посетитель не найден.",markup([]Button{callbackButton("⬅️ Посетители","adm:visitors")}))}
  if !p.HasLead && b.visitorHasApplication(userID){
   _=b.visitors.markLead(userID)
   p.HasLead=true
  }
  return b.Send(ctx,chatID,visitorHTML(p,time.Now()),markup(
   []Button{urlButton("👤 Открыть профиль",visitorProfileURL(p))},
+  []Button{callbackButton("🗑 Скрыть запись",fmt.Sprintf("adm:clean:one:v:%d",userID))},
   []Button{callbackButton("⬅️ Посетители","adm:visitors")},
  ))
+}
+
+// setHidden atomically switches the display state. Hidden profiles still
+// receive activity updates but cannot trigger additional no-lead alarms.
+func (v *visitorStore) setHidden(ids []int64,hidden bool) error {
+ if v==nil{return errors.New("visitor storage unavailable")}
+ v.mu.Lock();defer v.mu.Unlock()
+ copied:=make(map[string]visitorProfile,len(v.users))
+ for k,p:=range v.users{copied[k]=cloneVisitor(p)}
+ seen:=map[int64]bool{}
+ for _,id:=range ids{
+  if id<=0||seen[id]{return errors.New("invalid or duplicate visitor ID")}
+  seen[id]=true
+  key:=strconv.FormatInt(id,10)
+  p,ok:=copied[key]
+  if !ok{return fmt.Errorf("посетитель %d не найден",id)}
+  if p.Hidden==hidden{return fmt.Errorf("посетитель %d уже имеет этот статус",id)}
+  p.Hidden=hidden
+  copied[key]=p
+ }
+ prior:=v.users
+ v.users=copied
+ if err:=v.saveLocked();err!=nil{v.users=prior;return err}
+ return nil
+}
+func (v *visitorStore) eraseHidden(ids []int64) error {
+ if v==nil{return errors.New("visitor storage unavailable")}
+ v.mu.Lock();defer v.mu.Unlock()
+ copied:=make(map[string]visitorProfile,len(v.users))
+ for k,p:=range v.users{copied[k]=cloneVisitor(p)}
+ seen:=map[int64]bool{}
+ for _,id:=range ids{
+  if id<=0||seen[id]{return errors.New("invalid or duplicate visitor ID")}
+  seen[id]=true
+  key:=strconv.FormatInt(id,10)
+  p,ok:=copied[key]
+  if !ok||!p.Hidden{return fmt.Errorf("посетитель %d не находится в корзине",id)}
+  delete(copied,key)
+ }
+ prior:=v.users
+ v.users=copied
+ if err:=v.saveLocked();err!=nil{v.users=prior;return err}
+ return nil
 }

@@ -26,7 +26,7 @@ const effectiveFile = "catalog_effective.json"
 const cardsFile = "admin_cards.json"
 const adminLocationsFile = catalog.AdminLocationsFilename
 
-var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", "visitors.json", cardsFile, adminLocationsFile}
+var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", "visitors.json", DeletionFile, cardsFile, adminLocationsFile}
 
 type Manifest struct {
 	Schema    int               `json:"schema"`
@@ -222,6 +222,9 @@ func Examine(raw []byte) (Archive, error) {
 	if raw,ok:=files["visitors.json"];ok {
 		if _,err:=parseVisitors(raw);err!=nil{return Archive{},fmt.Errorf("invalid visitors: %w",err)}
 	}
+	if raw,ok:=files[DeletionFile];ok{
+		if _,err:=ParseDeletionLedger(raw);err!=nil{return Archive{},fmt.Errorf("invalid deletion ledger: %w",err)}
+	}
 	if _, err := mergeAnalytics(files["analytics.jsonl"], nil); err != nil {
 		return Archive{}, fmt.Errorf("invalid analytics: %w", err)
 	}
@@ -379,6 +382,17 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 			return path, err
 		}
 		replacement["leads.json"] = protectedLeads
+        // Deletion markers are permanent and merged before restoring
+        // any records. Otherwise an older ZIP would undo a hard deletion.
+        currentMarks,err:=os.ReadFile(filepath.Join(root,DeletionFile))
+        if err!=nil && !errors.Is(err,os.ErrNotExist){return path,err}
+        ledger,err:=mergeDeletionLedgers(archive.Contents[DeletionFile],currentMarks)
+        if err!=nil{return path,err}
+        markerBytes,err:=ledger.Marshal()
+        if err!=nil{return path,err}
+        replacement[DeletionFile]=markerBytes
+        replacement["leads.json"],err=FilterDeletedLeads(replacement["leads.json"],ledger)
+        if err!=nil{return path,err}
 		// Visitors are optional in older archives. Preserve all recent
 		// visitors and deduplicate alerts when restoring older data.
 		if archivedVisitors,exists:=archive.Contents["visitors.json"];exists{
@@ -388,6 +402,17 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 			if err!=nil{return path,err}
 			replacement["visitors.json"]=combined
 		}
+        // Some older archives contain no visitors.json; apply the ledger
+        // to live data as well, including after a partially failed deletion.
+        if _,found:=replacement["visitors.json"];!found{
+            current,err:=os.ReadFile(filepath.Join(root,"visitors.json"))
+            if err!=nil && !errors.Is(err,os.ErrNotExist){return path,err}
+            if err==nil{replacement["visitors.json"]=current}
+        }
+        if raw,found:=replacement["visitors.json"];found{
+            replacement["visitors.json"],err=FilterDeletedVisitors(raw,ledger)
+            if err!=nil{return path,err}
+        }
 		currentAnalytics, err := os.ReadFile(filepath.Join(root, "analytics.jsonl"))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return path, err

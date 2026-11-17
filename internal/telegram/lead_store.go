@@ -41,6 +41,7 @@ type leadApplication struct {
 	TakenInWork bool `json:"taken_in_work,omitempty"`
 	TakenBy int64 `json:"taken_by,omitempty"`
 	TakenAt *time.Time `json:"taken_at,omitempty"`
+ Hidden bool `json:"hidden,omitempty"`
 }
 
 type leadState struct {
@@ -304,4 +305,69 @@ func (s *leadStore) allSubmitted() []leadApplication {
 	for _, lead := range s.state.History {out=append(out,cloneLead(lead))}
 	sort.Slice(out,func(i,j int)bool{return out[i].Number>out[j].Number})
 	return out
+}
+
+// visibleSubmitted is for UI and analytics. Hidden records are retained in
+// the durable store so a soft deletion can be undone without changing IDs.
+func (s *leadStore) visibleSubmitted() []leadApplication {
+ all:=s.allSubmitted()
+ visible:=make([]leadApplication,0,len(all))
+ for _,lead:=range all{if !lead.Hidden{visible=append(visible,lead)}}
+ return visible
+}
+func (s *leadStore) setHidden(numbers []int64,hidden bool) error {
+ if s==nil{return errors.New("lead store unavailable")}
+ s.mu.Lock();defer s.mu.Unlock()
+ next:=s.cloneLocked()
+ seen:=map[int64]bool{}
+ for _,n:=range numbers{
+  if n<=0 || seen[n] {return errors.New("invalid or duplicate application number")}
+  seen[n]=true
+  found:=false
+  for id,lead:=range next.Submitted{
+   if lead.Number!=n{continue}
+   if !lead.TakenInWork{return fmt.Errorf("заявка №%04d ещё не взята в работу",n)}
+   if lead.Hidden==hidden{return fmt.Errorf("заявка №%04d уже имеет этот статус",n)}
+   lead.Hidden=hidden;next.Submitted[id]=lead;found=true;break
+  }
+  if !found{
+   for i,lead:=range next.History{
+    if lead.Number!=n{continue}
+    if !lead.TakenInWork{return fmt.Errorf("заявка №%04d ещё не взята в работу",n)}
+    if lead.Hidden==hidden{return fmt.Errorf("заявка №%04d уже имеет этот статус",n)}
+    lead.Hidden=hidden;next.History[i]=lead;found=true;break
+   }
+  }
+  if !found{return fmt.Errorf("заявка №%04d не найдена",n)}
+ }
+ return s.saveLocked(next)
+}
+// eraseHidden removes only previously hidden and processed applications,
+// preserving the globally monotonic NextID for future user submissions.
+func (s *leadStore) eraseHidden(numbers []int64) error {
+ if s==nil{return errors.New("lead store unavailable")}
+ s.mu.Lock();defer s.mu.Unlock()
+ next:=s.cloneLocked()
+ wanted:=map[int64]bool{}
+ for _,n:=range numbers{
+  if n<=0||wanted[n]{return errors.New("invalid or duplicate application number")}
+  wanted[n]=true
+ }
+ for _,n:=range numbers{
+  found:=false
+  for user,lead:=range next.Submitted{
+   if lead.Number!=n{continue}
+   if !lead.Hidden||!lead.TakenInWork{return fmt.Errorf("заявка №%04d не находится в корзине",n)}
+   delete(next.Submitted,user);found=true;break
+  }
+  if !found{
+   for i,lead:=range next.History{
+    if lead.Number!=n{continue}
+    if !lead.Hidden||!lead.TakenInWork{return fmt.Errorf("заявка №%04d не находится в корзине",n)}
+    next.History=append(next.History[:i],next.History[i+1:]...);found=true;break
+   }
+  }
+  if !found{return fmt.Errorf("заявка №%04d не найдена",n)}
+ }
+ return s.saveLocked(next)
 }

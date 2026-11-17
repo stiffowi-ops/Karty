@@ -19,18 +19,25 @@ import (
 	"time"
 
 	"locationbot/internal/adminbackup"
+	"locationbot/internal/analytics"
 	"locationbot/internal/catalog"
 )
 
 type adminSession struct {
-	LocationID     string
-	OriginalHash   string
-	Draft          catalog.CardRevision
-	Field          string
-	SectionIndex   int
-	Backup         adminbackup.Archive
-	HasBackup      bool
-	AwaitingBackup bool
+	LocationID      string
+	OriginalHash    string
+	Draft           catalog.CardRevision
+	Field           string
+	SectionIndex    int
+	Backup          adminbackup.Archive
+	HasBackup       bool
+	AwaitingBackup  bool
+	StatsMetric     string
+	StatsDays       int
+	HistoryLocation string
+	HistoryPage     int
+	RestoreIndex    int
+	RestoreHash     string
 }
 type adminRevisionEvent struct {
 	At         time.Time            `json:"at"`
@@ -67,17 +74,34 @@ func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
 	return rows
 }
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
-	count := 0
-	if b.store != nil {
-		count = len(b.store.List())
-	}
+	count := len(b.store.List())
 	leads := b.adminLeadCount()
-	msg := fmt.Sprintf("⚙️ <b>Панель управления Karty</b>\n\n📍 Локаций: <b>%d</b>\n📨 Заявок: <b>%d</b>\n\nВыберите раздел:", count, leads)
+	saved := 0
+	for _, n := range b.adminCurrentFavorites() {
+		saved += n
+	}
+	views := 0
+	if b.metrics != nil {
+		cutoff := time.Now().UTC().AddDate(0, 0, -7)
+		for _, event := range b.metrics.Snapshot() {
+			if event.Kind == analytics.View && !event.At.Before(cutoff) {
+				views++
+			}
+		}
+	}
+	msg := fmt.Sprintf("⚙️ <b>Панель управления Karty</b>\n\n📍 Локаций: <b>%d</b> · 📨 Заявок: <b>%d</b>\n👁 Просмотров за 7 дней: <b>%d</b>\n⭐ Сейчас в избранном: <b>%d</b>\n\nВыберите раздел:", count, leads, views, saved)
 	return b.Send(ctx, chatID, msg, markup(
-		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Редактор локаций", "adm:locations:0")},
-		[]Button{callbackButton("📦 Резервные копии", "adm:backup")},
-		[]Button{callbackButton("🕘 История изменений", "adm:history")},
+		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Локации", "adm:locations:0")},
+		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("🕘 История", "adm:history")},
+		[]Button{callbackButton("📦 Бэкапы", "adm:backup"), callbackButton("🛠 Система", "adm:tools")},
 		[]Button{menuButton()},
+	))
+}
+func (b *Bot) showAdminTools(ctx context.Context, chatID int64) error {
+	return b.Send(ctx, chatID, "🛠 <b>Система Karty</b>\n\nЗдесь находятся служебные действия. Они доступны только администраторам.", markup(
+		[]Button{callbackButton("☁️ Синхронизация", "adm:sync"), callbackButton("🔄 Перезагрузить каталог", "adm:reload")},
+		[]Button{callbackButton("📍 Состояние каталога", "adm:status"), callbackButton("📦 Бэкапы", "adm:backup")},
+		[]Button{callbackButton("⬅️ Админ-панель", "adm:menu")},
 	))
 }
 func (b *Bot) adminLeadCount() int {
@@ -123,7 +147,11 @@ func (b *Bot) adminCurrentFavorites() map[string]int {
 	}
 	b.favorites.mu.RLock()
 	defer b.favorites.mu.RUnlock()
-	for _, ids := range b.favorites.byUser {
+	for userID, ids := range b.favorites.byUser {
+		n, err := strconv.ParseInt(userID, 10, 64)
+		if err != nil || b.isAdmin(n) {
+			continue
+		}
 		for _, id := range ids {
 			result[id]++
 		}
@@ -150,49 +178,98 @@ func (b *Bot) showAdminStats(ctx context.Context, chatID int64, metric string, d
 	if days != 7 && days != 30 && days != 0 {
 		days = 30
 	}
+	if metric == "saved" {
+		days = 0
+	}
+	if chatID > 0 {
+		session := b.adminSession(chatID)
+		session.StatsMetric = metric
+		session.StatsDays = days
+	}
 	ids := []string{}
 	names := map[string]string{}
-	for _, loc := range b.store.List() {
-		ids = append(ids, loc.ID)
-		names[loc.ID] = publicText(loc.Title)
+	for _, l := range b.store.List() {
+		ids = append(ids, l.ID)
+		names[l.ID] = publicText(l.Title)
 	}
 	if b.metrics == nil {
 		return b.Send(ctx, chatID, "Аналитика временно недоступна.", nil)
 	}
 	scores := b.metrics.Rankings(time.Now().UTC(), days, metric, ids, b.adminCurrentFavorites(), b.adminLeadDates())
 	labels := map[string]string{"views": "👁 Просмотры", "unique": "👤 Уникальные просмотры", "added": "⭐ Добавления в избранное", "saved": "⭐ Сейчас в избранном", "leads": "🎯 Заявки"}
-	period := "Все время"
+	period := "За всё время"
 	if days > 0 {
-		period = fmt.Sprintf("%d дней", days)
+		period = fmt.Sprintf("За %d дней", days)
+	}
+	if metric == "saved" {
+		period = "На текущий момент"
 	}
 	var text strings.Builder
 	text.WriteString("📊 <b>ТОП-10 локаций</b>\n" + labels[metric] + " · " + period + "\n\n")
-	for i, r := range scores {
-		number := r.Views
+	rows := [][]Button{}
+	for index, r := range scores {
+		n := r.Views
 		switch metric {
 		case "unique":
-			number = r.UniqueViews
+			n = r.UniqueViews
 		case "added":
-			number = r.Additions
+			n = r.Additions
 		case "saved":
-			number = r.CurrentFavorites
+			n = r.CurrentFavorites
 		case "leads":
-			number = r.Leads
+			n = r.Leads
 		}
-		text.WriteString(fmt.Sprintf("%d. <b>%s</b> — %d\n", i+1, html.EscapeString(names[r.LocationID]), number))
+		text.WriteString(fmt.Sprintf("%d. <b>%s</b> — %d\n", index+1, html.EscapeString(names[r.LocationID]), n))
+		rows = append(rows, []Button{callbackButton(fmt.Sprintf("%d. %s · %d", index+1, limitRunes(names[r.LocationID], 33), n), "adm:insight:"+r.LocationID+":"+strconv.Itoa(days))})
 	}
 	if metric == "views" || metric == "unique" {
-		text.WriteString("\n<em>Визиты — открытия карточек в боте, не физические посещения. Старые просмотры не восстанавливаются.</em>")
+		text.WriteString("\n<em>Учёт открытий карточек, а не физических посещений. История до внедрения аналитики недоступна.</em>")
 	}
 	if metric == "added" {
 		text.WriteString("\n<em>История добавлений ведётся с момента включения аналитики.</em>")
 	}
-	return b.Send(ctx, chatID, text.String(), markup(
-		[]Button{callbackButton("👁 Просмотры", "adm:stats:views:"+strconv.Itoa(days)), callbackButton("⭐ Добавления", "adm:stats:added:"+strconv.Itoa(days))},
-		[]Button{callbackButton("👤 Уникальные", "adm:stats:unique:"+strconv.Itoa(days)), callbackButton("🎯 Заявки", "adm:stats:leads:"+strconv.Itoa(days))},
-		[]Button{callbackButton("⭐ Сейчас сохранено", "adm:stats:saved:"+strconv.Itoa(days))},
-		[]Button{callbackButton("7 дней", "adm:stats:"+metric+":7"), callbackButton("30 дней", "adm:stats:"+metric+":30"), callbackButton("Всё время", "adm:stats:"+metric+":0")},
-		[]Button{callbackButton("⬅️ Админ-панель", "adm:menu")},
+	if metric == "saved" {
+		text.WriteString("\n<em>Это текущий остаток сохранений, а не статистика за период.</em>")
+	}
+	rows = append(rows, []Button{callbackButton("👁 Просмотры", "adm:stats:views:"+strconv.Itoa(days)), callbackButton("⭐ Добавления", "adm:stats:added:"+strconv.Itoa(days))})
+	rows = append(rows, []Button{callbackButton("👤 Уникальные", "adm:stats:unique:"+strconv.Itoa(days)), callbackButton("🎯 Заявки", "adm:stats:leads:"+strconv.Itoa(days))})
+	rows = append(rows, []Button{callbackButton("⭐ Сейчас в избранном", "adm:stats:saved:0")})
+	if metric != "saved" {
+		rows = append(rows, []Button{callbackButton("7 дней", "adm:stats:"+metric+":7"), callbackButton("30 дней", "adm:stats:"+metric+":30"), callbackButton("Всё время", "adm:stats:"+metric+":0")})
+	}
+	rows = append(rows, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
+	return b.Send(ctx, chatID, text.String(), markup(rows...))
+}
+func (b *Bot) showLocationInsights(ctx context.Context, chatID int64, locationID string, days int) error {
+	loc, ok := b.store.Find(locationID)
+	if !ok {
+		return b.Send(ctx, chatID, "Локация не найдена.", nil)
+	}
+	if days != 7 && days != 30 && days != 0 {
+		days = 30
+	}
+	if b.metrics == nil {
+		return b.Send(ctx, chatID, "Аналитика временно недоступна.", nil)
+	}
+	ranks := b.metrics.Rankings(time.Now().UTC(), days, "views", []string{locationID}, b.adminCurrentFavorites(), b.adminLeadDates())
+	if len(ranks) != 1 {
+		return b.Send(ctx, chatID, "Статистика пока недоступна.", nil)
+	}
+	r := ranks[0]
+	period := "за всё время"
+	if days > 0 {
+		period = fmt.Sprintf("за %d дней", days)
+	}
+	description := fmt.Sprintf("📍 <b>%s</b> · <code>%s</code>\n\n📊 Показатели %s\n👁 Открытий: <b>%d</b>\n👤 Уникальных: <b>%d</b>\n⭐ Добавили в избранное: <b>%d</b>\n🎯 Заявок: <b>%d</b>\n\n⭐ <b>Сейчас сохранено: %d</b> (за всё время)", html.EscapeString(publicText(loc.Title)), html.EscapeString(loc.ID), period, r.Views, r.UniqueViews, r.Additions, r.Leads, r.CurrentFavorites)
+	session := b.adminSession(chatID)
+	metric := session.StatsMetric
+	if metric == "" {
+		metric = "views"
+	}
+	return b.Send(ctx, chatID, description, markup(
+		[]Button{callbackButton("7 дней", "adm:insight:"+locationID+":7"), callbackButton("30 дней", "adm:insight:"+locationID+":30"), callbackButton("Всё время", "adm:insight:"+locationID+":0")},
+		[]Button{callbackButton("✏️ Редактор", "adm:edit:"+locationID), callbackButton("🕘 История", "adm:histloc:"+locationID)},
+		[]Button{callbackButton("⬅️ К рейтингу", "adm:stats:"+metric+":"+strconv.Itoa(session.StatsDays))},
 	))
 }
 func (b *Bot) showAdminLocations(ctx context.Context, chatID int64, page int) error {
@@ -247,7 +324,9 @@ func (b *Bot) showAdminEditor(ctx context.Context, chatID int64, s *adminSession
 	rows := [][]Button{
 		{callbackButton("✏️ Название", "adm:field:title"), callbackButton("📌 Статус", "adm:field:line_status")},
 		{callbackButton("📍 Ориентир", "adm:field:landmarks"), callbackButton("🗺 Ссылка карты", "adm:field:map_url")},
+		{callbackButton("📝 Краткое описание", "adm:field:description"), callbackButton("📌 Категория", "adm:field:category")},
 		{callbackButton("🧩 Разделы карточки", "adm:sections")},
+		{callbackButton("📊 Показатели", "adm:insight:"+s.LocationID+":30"), callbackButton("🕘 История", "adm:histloc:"+s.LocationID)},
 		{callbackButton("👁 Предпросмотр", "adm:preview"), callbackButton("✅ Опубликовать", "adm:publish")},
 		{callbackButton("❌ Отменить", "adm:locations:0"), callbackButton("⬅️ Админ-панель", "adm:menu")},
 	}
@@ -380,26 +459,185 @@ func (b *Bot) publishAdminDraft(ctx context.Context, chatID, userID int64, s *ad
 	s.OriginalHash = catalog.RevisionHash(s.Draft)
 	return b.Send(ctx, chatID, "✅ <b>Карточка опубликована!</b>\n\nВсе новые открытия карточки будут показывать обновлённые данные.", markup([]Button{callbackButton("✏️ Продолжить редактирование", "adm:editor")}, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")}))
 }
+
+// A paged, location-filtered revision log. Every row opens an actual version.
 func (b *Bot) showAdminHistory(ctx context.Context, chatID int64) error {
+	session := b.adminSession(chatID)
+	session.HistoryLocation = ""
+	return b.showAdminHistoryPage(ctx, chatID, 0)
+}
+func (b *Bot) showAdminHistoryPage(ctx context.Context, chatID int64, page int) error {
+	session := b.adminSession(chatID)
 	records, err := b.adminHistory()
 	if err != nil {
 		return err
 	}
-	var msg strings.Builder
-	msg.WriteString("🕘 <b>История изменений карточек</b>\n")
-	rows := [][]Button{}
-	for i := len(records) - 1; i >= 0 && i >= len(records)-10; i-- {
-		item := records[i]
-		msg.WriteString(fmt.Sprintf("\n%s · %s · %s · администратор %d", item.At.Format("02.01 15:04"), html.EscapeString(item.LocationID), html.EscapeString(item.Operation), item.Actor))
-		if i == len(records)-1 {
-			rows = append(rows, []Button{callbackButton("↩️ Откатить последнюю правку", "adm:undo")})
+	indexes := []int{}
+	for i := len(records) - 1; i >= 0; i-- {
+		if session.HistoryLocation == "" || records[i].LocationID == session.HistoryLocation {
+			indexes = append(indexes, i)
 		}
 	}
-	if len(records) == 0 {
-		msg.WriteString("\n\nИзменений пока нет.")
+	pages := (len(indexes) + 7) / 8
+	if pages < 1 {
+		pages = 1
+	}
+	if page < 0 {
+		page = 0
+	}
+	if page >= pages {
+		page = pages - 1
+	}
+	session.HistoryPage = page
+	var msg strings.Builder
+	msg.WriteString("🕘 <b>История редакций карточек</b>")
+	if session.HistoryLocation != "" {
+		msg.WriteString("\nЛокация: <code>" + html.EscapeString(session.HistoryLocation) + "</code>")
+	}
+	msg.WriteString(fmt.Sprintf("\nЗаписей: %d · Страница %d\n\n", len(indexes), page+1))
+	rows := [][]Button{}
+	for _, index := range indexes[page*8 : min((page+1)*8, len(indexes))] {
+		e := records[index]
+		msg.WriteString(fmt.Sprintf("• %s · %s · %s\n", e.At.UTC().Format("02.01 15:04"), html.EscapeString(e.LocationID), html.EscapeString(e.Operation)))
+		rows = append(rows, []Button{callbackButton(fmt.Sprintf("🕘 %s · %s", e.At.Format("02.01 15:04"), e.LocationID), fmt.Sprintf("adm:histview:%d", index))})
+	}
+	if len(indexes) == 0 {
+		msg.WriteString("Изменений пока нет.")
+	}
+	paging := []Button{}
+	if page > 0 {
+		paging = append(paging, callbackButton("◀️ Ранее", fmt.Sprintf("adm:histpage:%d", page-1)))
+	}
+	if (page+1)*8 < len(indexes) {
+		paging = append(paging, callbackButton("Позже ▶️", fmt.Sprintf("adm:histpage:%d", page+1)))
+	}
+	if len(paging) > 0 {
+		rows = append(rows, paging)
+	}
+	if session.HistoryLocation != "" {
+		rows = append(rows, []Button{callbackButton("📍 К карточке", "adm:edit:"+session.HistoryLocation), callbackButton("🕘 Вся история", "adm:history")})
 	}
 	rows = append(rows, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
 	return b.Send(ctx, chatID, msg.String(), markup(rows...))
+}
+func briefDiff(before, after catalog.CardRevision) string {
+	changes := []string{}
+	diff := func(label, a, b string) {
+		if a != b {
+			changes = append(changes, html.EscapeString(label)+": <i>"+html.EscapeString(limitRunes(a, 75))+"</i> → <b>"+html.EscapeString(limitRunes(b, 75))+"</b>")
+		}
+	}
+	diff("Название", before.Title, after.Title)
+	diff("Категория", before.Category, after.Category)
+	diff("Статус", before.LineStatus, after.LineStatus)
+	diff("Ориентир", before.Landmarks, after.Landmarks)
+	diff("Ссылка карты", before.MapURL, after.MapURL)
+	diff("Описание", before.Description, after.Description)
+	old := map[string]catalog.CardSection{}
+	new := map[string]catalog.CardSection{}
+	for _, v := range before.Sections {
+		old[v.ID] = v
+	}
+	for _, v := range after.Sections {
+		new[v.ID] = v
+	}
+	for _, v := range before.Sections {
+		n, ok := new[v.ID]
+		if !ok {
+			changes = append(changes, "🗑 Удалён: "+html.EscapeString(v.Title))
+			continue
+		}
+		if v.Title != n.Title || v.Body != n.Body || v.Enabled != n.Enabled {
+			changes = append(changes, "✏️ Раздел: "+html.EscapeString(limitRunes(n.Title, 65)))
+		}
+	}
+	for _, v := range after.Sections {
+		if _, ok := old[v.ID]; !ok {
+			changes = append(changes, "➕ Добавлен: "+html.EscapeString(v.Title))
+		}
+	}
+	beforeOrder := []string{}
+	afterOrder := []string{}
+	for _, v := range before.Sections {
+		beforeOrder = append(beforeOrder, v.ID)
+	}
+	for _, v := range after.Sections {
+		afterOrder = append(afterOrder, v.ID)
+	}
+	if strings.Join(beforeOrder, ",") != strings.Join(afterOrder, ",") {
+		changes = append(changes, "↕️ Изменён порядок разделов")
+	}
+	if len(changes) == 0 {
+		return "Изменений в видимых полях нет."
+	}
+	return strings.Join(changes, "\n")
+}
+func (b *Bot) showAdminHistoryEntry(ctx context.Context, chatID int64, index int) error {
+	records, err := b.adminHistory()
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(records) {
+		return b.showAdminHistoryPage(ctx, chatID, b.adminSession(chatID).HistoryPage)
+	}
+	item := records[index]
+	summary := fmt.Sprintf("🕘 <b>Редакция #%d</b> · <code>%s</code>\n%s UTC · Администратор: <code>%d</code>\nДействие: %s\n\n<b>Что изменилось</b>\n%s", index+1, html.EscapeString(item.LocationID), item.At.UTC().Format("02.01.2006 15:04"), item.Actor, html.EscapeString(item.Operation), briefDiff(item.Before, item.After))
+	return b.Send(ctx, chatID, summary, markup(
+		[]Button{callbackButton("↩️ Восстановить версию до правки", fmt.Sprintf("adm:histrestore:%d", index))},
+		[]Button{callbackButton("⬅️ К истории", fmt.Sprintf("adm:histpage:%d", b.adminSession(chatID).HistoryPage))},
+	))
+}
+func (b *Bot) confirmAdminHistoryRestore(ctx context.Context, chatID int64, index int) error {
+	records, err := b.adminHistory()
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(records) {
+		return b.showAdminHistoryPage(ctx, chatID, 0)
+	}
+	loc, ok := b.store.Find(records[index].LocationID)
+	if !ok {
+		return b.Send(ctx, chatID, "Локация больше не найдена.", nil)
+	}
+	session := b.adminSession(chatID)
+	session.RestoreIndex = index
+	session.RestoreHash = catalog.RevisionHash(catalog.Revision(loc))
+	return b.Send(ctx, chatID, "⚠️ <b>Подтвердите откат</b>\n\nБудет восстановлена версия карточки <b>до выбранной правки</b>. Текущая версия останется в истории.", markup(
+		[]Button{callbackButton("✅ Восстановить", fmt.Sprintf("adm:histapply:%d", index))},
+		[]Button{callbackButton("❌ Отмена", fmt.Sprintf("adm:histview:%d", index))},
+	))
+}
+func (b *Bot) applyAdminHistoryRestore(ctx context.Context, chatID, userID int64, index int) error {
+	session := b.adminSession(userID)
+	if session.RestoreIndex != index || session.RestoreHash == "" {
+		return b.Send(ctx, chatID, "Подтверждение устарело. Выберите версию заново.", nil)
+	}
+	confirmedHash := session.RestoreHash
+	session.RestoreHash, session.RestoreIndex = "", -1
+	records, err := b.adminHistory()
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(records) {
+		return b.showAdminHistoryPage(ctx, chatID, 0)
+	}
+	item := records[index]
+	current, ok := b.store.Find(item.LocationID)
+	if !ok {
+		return errors.New("location missing")
+	}
+	expected := catalog.RevisionHash(catalog.Revision(current))
+	// The confirmation stored the hash so edits by another admin cannot be lost.
+	if expected != confirmedHash {
+		return b.Send(ctx, chatID, "Карточка изменилась после подтверждения. Повторите выбор версии.", nil)
+	}
+	if err := b.store.AdminEdit(item.LocationID, expected, item.Before); err != nil {
+		return err
+	}
+	if err := b.recordAdminHistory(adminRevisionEvent{At: time.Now().UTC(), Actor: userID, LocationID: item.LocationID, Before: catalog.Revision(current), After: item.Before, Operation: "restore"}); err != nil {
+		return err
+	}
+	return b.Send(ctx, chatID, "✅ Редакция восстановлена. Предыдущее состояние записано в историю.", markup([]Button{callbackButton("🕘 История", "adm:history"), callbackButton("✏️ Карточка", "adm:edit:"+item.LocationID)}))
 }
 func (b *Bot) undoLastAdminChange(ctx context.Context, chatID, userID int64) error {
 	records, err := b.adminHistory()
@@ -423,21 +661,53 @@ func (b *Bot) undoLastAdminChange(ctx context.Context, chatID, userID int64) err
 	return b.Send(ctx, chatID, "✅ Предыдущая редакция карточки восстановлена.", markup([]Button{callbackButton("🕘 История", "adm:history")}))
 }
 func (b *Bot) showBackupMenu(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "📦 <b>Резервные копии Karty</b>\n\nПолный ZIP содержит заявки, текущие редакции карточек, избранное, историю изменений и аналитику. Отправка и восстановление доступны только администраторам в личном чате.", markup(
-		[]Button{callbackButton("📥 Скачать полный ZIP", "adm:export")},
+	list, err := b.autoBackupList()
+	if err != nil {
+		return err
+	}
+	last := "ещё нет"
+	if len(list) > 0 {
+		last = strings.TrimSuffix(strings.TrimPrefix(list[len(list)-1], "auto-"), ".zip")
+	}
+	info := fmt.Sprintf("📦 <b>Резервные копии Karty</b>\n\nЕжедневный бэкап: 03:00 UTC\nХраним последние %d архивов на сервере.\nПоследняя копия: <b>%s</b>\n\nАрхив содержит заявки, карточки и избранное. Отправляйте ZIP только администраторам.", automaticBackupKeep, last)
+	return b.Send(ctx, chatID, info, markup(
+		[]Button{callbackButton("📥 Скачать свежий ZIP", "adm:export")},
+		[]Button{callbackButton("📥 Скачать последний авто ZIP", "adm:exportauto")},
 		[]Button{callbackButton("📤 Загрузить бэкап", "adm:import")},
 		[]Button{callbackButton("⬅️ Админ-панель", "adm:menu")},
 	))
 }
 func (b *Bot) sendAdminBackup(ctx context.Context, chatID int64) error {
-	data, err := adminbackup.Build(b.store.DataDir(), b.store.List())
+	b.backupMu.Lock()
+	defer b.backupMu.Unlock()
+	data, err := b.snapshotBackup()
 	if err != nil {
 		return err
 	}
 	filename := "karty-backup-" + time.Now().UTC().Format("20060102-150405") + ".zip"
+	return b.sendAdminDocument(ctx, chatID, data, filename)
+}
+func (b *Bot) sendLatestAutoBackup(ctx context.Context, chatID int64) error {
+	b.backupMu.Lock()
+	defer b.backupMu.Unlock()
+	files, err := b.autoBackupList()
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return b.Send(ctx, chatID, "Автоматических копий ещё нет.", markup([]Button{callbackButton("⬅️ Бэкапы", "adm:backup")}))
+	}
+	filename := files[len(files)-1]
+	data, err := os.ReadFile(filepath.Join(b.autoBackupDirectory(), filename))
+	if err != nil {
+		return err
+	}
+	return b.sendAdminDocument(ctx, chatID, data, filename)
+}
+func (b *Bot) sendAdminDocument(ctx context.Context, chatID int64, data []byte, filename string) error {
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
-	if err = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
 	}
 	file, err := writer.CreateFormFile("document", filename)
@@ -537,49 +807,58 @@ func (b *Bot) restoreAdminBackup(ctx context.Context, chatID, userID int64, mode
 	if !session.HasBackup {
 		return b.showBackupMenu(ctx, chatID)
 	}
-	// Serialize restoration with background lead delivery and favorites writes.
-	if mode == "full" {
-		if b.leads != nil {
-			b.leads.mu.Lock()
-			defer b.leads.mu.Unlock()
+	b.backupMu.Lock()
+	// Scoped helper to ensure all locks are released before sending a Telegram message.
+	protective, err := func() (string, error) {
+		if mode == "full" {
+			if b.leads != nil {
+				b.leads.mu.Lock()
+				defer b.leads.mu.Unlock()
+			}
+			if b.favorites != nil {
+				b.favorites.mu.Lock()
+				defer b.favorites.mu.Unlock()
+			}
 		}
-		if b.favorites != nil {
-			b.favorites.mu.Lock()
-			defer b.favorites.mu.Unlock()
+		var path string
+		action := func() error {
+			var e error
+			path, e = adminbackup.Restore(b.store.DataDir(), session.Backup, mode, b.store.List())
+			if e != nil {
+				return e
+			}
+			if e = b.store.ReloadAdminCards(); e != nil {
+				return fmt.Errorf("catalog reload (protective backup %s): %w", path, e)
+			}
+			if mode == "full" {
+				fav, e := openFavoriteStore(filepath.Join(b.store.DataDir(), "favorites.json"))
+				if e != nil {
+					return e
+				}
+				if b.favorites != nil {
+					b.favorites.byUser = fav.byUser
+				} else {
+					b.favorites = fav
+				}
+				if e = b.reloadLeadsAfterRestore(); e != nil {
+					return e
+				}
+			}
+			return nil
 		}
-	}
-	path, err := adminbackup.Restore(b.store.DataDir(), session.Backup, mode, b.store.List())
+		if mode == "full" && b.metrics != nil {
+			return path, b.metrics.WithExclusiveFile(action)
+		}
+		return path, action()
+	}()
+	b.backupMu.Unlock()
 	if err != nil {
 		return b.Send(ctx, chatID, "❌ Восстановление не удалось: "+html.EscapeString(err.Error()), nil)
 	}
-	if err = b.store.ReloadAdminCards(); err != nil {
-		return fmt.Errorf("imported catalog reload failed (protective snapshot %s): %w", path, err)
-	}
-	if mode == "full" {
-		fav, err := openFavoriteStore(filepath.Join(b.store.DataDir(), "favorites.json"))
-		if err != nil {
-			return err
-		}
-		if b.favorites != nil {
-			b.favorites.byUser = fav.byUser
-		} else {
-			b.favorites = fav
-		}
-		if b.metrics != nil {
-			if err = b.metrics.Reload(); err != nil {
-				return err
-			}
-		}
-		if err := b.reloadLeadsAfterRestore(); err != nil {
-			return err
-		}
-	}
 	session.HasBackup = false
-	return b.Send(ctx, chatID, "✅ <b>Данные восстановлены.</b>\n\nЗащитная копия предыдущего состояния сохранена на сервере. Формат: ZIP.", markup([]Button{callbackButton("⬅️ Админ-панель", "adm:menu")}))
+	return b.Send(ctx, chatID, "✅ <b>Данные восстановлены.</b>\n\nЗащитная копия сохранена на сервере: <code>"+html.EscapeString(filepath.Base(protective))+"</code>", markup([]Button{callbackButton("⬅️ Админ-панель", "adm:menu")}))
 }
 
-// The current version of Karty exposes a leadStore; this is separated to
-// keep the backup workflow testable without users' private information.
 func (b *Bot) reloadLeadsAfterRestore() error {
 	newStore, err := openLeadStore(filepath.Join(b.store.DataDir(), "leads.json"))
 	if err != nil {
@@ -608,6 +887,11 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		session.AwaitingBackup = false
 		session.HasBackup = false
 		return b.showBackupMenu(ctx, chatID)
+	case data == "adm:exportauto":
+		if err := b.sendLatestAutoBackup(ctx, chatID); err != nil {
+			return err
+		}
+		return b.showBackupMenu(ctx, chatID)
 	case data == "adm:export":
 		if err := b.sendAdminBackup(ctx, chatID); err != nil {
 			return err
@@ -629,8 +913,84 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		return b.restoreAdminBackup(ctx, chatID, from.ID, strings.TrimPrefix(data, "adm:apply:"))
 	case data == "adm:history":
 		return b.showAdminHistory(ctx, chatID)
+	case strings.HasPrefix(data, "adm:histloc:"):
+		session.HistoryLocation = strings.TrimPrefix(data, "adm:histloc:")
+		if _, ok := b.store.Find(session.HistoryLocation); !ok {
+			return b.showAdminHistory(ctx, chatID)
+		}
+		return b.showAdminHistoryPage(ctx, chatID, 0)
+	case strings.HasPrefix(data, "adm:histpage:"):
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "adm:histpage:"))
+		if err != nil {
+			page = 0
+		}
+		return b.showAdminHistoryPage(ctx, chatID, page)
+	case strings.HasPrefix(data, "adm:histview:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(data, "adm:histview:"))
+		if err != nil {
+			return nil
+		}
+		return b.showAdminHistoryEntry(ctx, chatID, n)
+	case strings.HasPrefix(data, "adm:histrestore:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(data, "adm:histrestore:"))
+		if err != nil {
+			return nil
+		}
+		return b.confirmAdminHistoryRestore(ctx, chatID, n)
+	case strings.HasPrefix(data, "adm:histapply:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(data, "adm:histapply:"))
+		if err != nil {
+			return nil
+		}
+		return b.applyAdminHistoryRestore(ctx, chatID, from.ID, n)
 	case data == "adm:undo":
-		return b.undoLastAdminChange(ctx, chatID, from.ID)
+		entries, err := b.adminHistory()
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			return b.showAdminHistory(ctx, chatID)
+		}
+		return b.showAdminHistoryEntry(ctx, chatID, len(entries)-1)
+	case strings.HasPrefix(data, "adm:insight:") && len(parts) == 4:
+		days, err := strconv.Atoi(parts[3])
+		if err != nil {
+			days = 30
+		}
+		return b.showLocationInsights(ctx, chatID, parts[2], days)
+	case data == "adm:leads":
+		return b.showAdminLeads(ctx, chatID)
+	case data == "adm:tools":
+		return b.showAdminTools(ctx, chatID)
+	case data == "adm:reload":
+		if err := b.store.Reload(); err != nil {
+			return b.Send(ctx, chatID, "Ошибка обновления каталога: "+html.EscapeString(err.Error()), nil)
+		}
+		return b.Send(ctx, chatID, "✅ Каталог обновлён.", markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
+	case data == "adm:sync":
+		if b.syncer == nil {
+			return b.Send(ctx, chatID, "Синхронизация недоступна.", nil)
+		}
+		_ = b.Send(ctx, chatID, "☁️ Синхронизация данных Яндекс Диска…", markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
+		callCtx, cancel := context.WithTimeout(ctx, 7*time.Minute)
+		defer cancel()
+		info, err := b.syncer.Run(callCtx)
+		if err != nil {
+			return b.Send(ctx, chatID, "❌ Синхронизация не выполнена: "+html.EscapeString(err.Error()), nil)
+		}
+		return b.Send(ctx, chatID, fmt.Sprintf("✅ Файлов: %d · скачано: %d · без изменений: %d · ошибок: %d", info.Total, info.Downloaded, info.Skipped, len(info.Failures)), markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
+	case data == "adm:status":
+		items := b.store.List()
+		geo, pics := 0, 0
+		for _, l := range items {
+			if l.Latitude != nil && l.Longitude != nil {
+				geo++
+			}
+			if l.ImageURL != "" {
+				pics++
+			}
+		}
+		return b.Send(ctx, chatID, fmt.Sprintf("📍 <b>Состояние каталога</b>\nЛокаций: %d\nКоординаты: %d\nФото: %d", len(items), geo, pics), markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
 	case strings.HasPrefix(data, "adm:stats:") && len(parts) == 4:
 		period, err := strconv.Atoi(parts[3])
 		if err != nil {
@@ -664,7 +1024,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 	case strings.HasPrefix(data, "adm:field:"):
 		field := strings.TrimPrefix(data, "adm:field:")
 		switch field {
-		case "title", "line_status", "landmarks", "map_url":
+		case "title", "line_status", "landmarks", "map_url", "description", "category":
 		default:
 			return nil
 		}
@@ -699,6 +1059,13 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		index := len(session.Draft.Sections)
 		session.Draft.Sections = append(session.Draft.Sections, catalog.CardSection{ID: fmt.Sprintf("extra-%d", time.Now().UTC().UnixNano()), Title: "Новый раздел", Body: "Добавьте описание", Enabled: true})
 		return b.showAdminSection(ctx, chatID, session, index)
+	case strings.HasPrefix(data, "adm:removeconfirm:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(data, "adm:removeconfirm:"))
+		if err != nil || n < 0 || n >= len(session.Draft.Sections) {
+			return b.showAdminSections(ctx, chatID, session)
+		}
+		session.Draft.Sections = append(session.Draft.Sections[:n], session.Draft.Sections[n+1:]...)
+		return b.showAdminSections(ctx, chatID, session)
 	case strings.HasPrefix(data, "adm:toggle:") || strings.HasPrefix(data, "adm:remove:") || strings.HasPrefix(data, "adm:up:") || strings.HasPrefix(data, "adm:down:"):
 		op := parts[1]
 		n, err := strconv.Atoi(parts[2])
@@ -706,8 +1073,13 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 			return nil
 		}
 		switch op {
-		case "toggle", "remove":
+		case "toggle":
 			session.Draft.Sections[n].Enabled = !session.Draft.Sections[n].Enabled
+		case "remove":
+			return b.Send(ctx, chatID, "🗑 <b>Удалить раздел из черновика?</b>\n\n"+html.EscapeString(session.Draft.Sections[n].Title)+"\n\nРаздел будет удалён после публикации. До публикации можно отменить черновик, после публикации восстановить через историю.", markup(
+				[]Button{callbackButton("🗑 Да, удалить", fmt.Sprintf("adm:removeconfirm:%d", n))},
+				[]Button{callbackButton("❌ Отмена", fmt.Sprintf("adm:section:%d", n))},
+			))
 		case "up":
 			if n > 0 {
 				session.Draft.Sections[n], session.Draft.Sections[n-1] = session.Draft.Sections[n-1], session.Draft.Sections[n]
@@ -754,6 +1126,8 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID int64, from user, inpu
 		return false, nil
 	}
 	input = strings.TrimSpace(input)
+	oldDraft := session.Draft
+	oldDraft.Sections = append([]catalog.CardSection(nil), session.Draft.Sections...)
 	if len([]rune(input)) > 3500 {
 		return true, b.Send(ctx, chatID, "Слишком длинный текст (максимум 3500 символов).", nil)
 	}
@@ -766,6 +1140,10 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID int64, from user, inpu
 		session.Draft.Landmarks = input
 	case "map_url":
 		session.Draft.MapURL = input
+	case "description":
+		session.Draft.Description = input
+	case "category":
+		session.Draft.Category = input
 	case "section_title":
 		session.Draft.Sections[session.SectionIndex].Title = input
 	case "section_body":
@@ -774,6 +1152,7 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID int64, from user, inpu
 		return false, nil
 	}
 	if err := session.Draft.Validate(); err != nil {
+		session.Draft = oldDraft
 		return true, b.Send(ctx, chatID, "Некорректное значение: "+html.EscapeString(err.Error()), nil)
 	}
 	session.Field = ""

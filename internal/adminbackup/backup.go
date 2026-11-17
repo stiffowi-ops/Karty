@@ -315,6 +315,24 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 			return path, err
 		}
 		replacement["analytics.jsonl"] = merged
+		currentFavorites, err := os.ReadFile(filepath.Join(root, "favorites.json"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return path, err
+		}
+		protectedFavorites, err := mergeFavorites(replacement["favorites.json"], currentFavorites, currentAnalytics, archive.Inspect.CreatedAt)
+		if err != nil {
+			return path, err
+		}
+		replacement["favorites.json"] = protectedFavorites
+		currentHistory, err := os.ReadFile(filepath.Join(root, "admin_history.json"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return path, err
+		}
+		protectedHistory, err := mergeRevisionHistory(replacement["admin_history.json"], currentHistory)
+		if err != nil {
+			return path, err
+		}
+		replacement["admin_history.json"] = protectedHistory
 	}
 	old := map[string][]byte{}
 	existed := map[string]bool{}

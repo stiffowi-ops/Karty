@@ -41,6 +41,7 @@ type Bot struct {
 	botID                    int64
  metrics *analytics.Store
  adminMu sync.Mutex
+ backupMu sync.Mutex
  adminStates map[int64]*adminSession
 }
 type user struct {
@@ -1098,8 +1099,11 @@ func (b *Bot) Run(ctx context.Context) error {
 		b.botID = identity.ID
 	}
 	b.startLeadDeliveryRetry(ctx)
+ go b.autoBackupLoop(ctx)
+	// Only /start is shown in Telegram's command picker. All other
+	// user and administrator workflows remain accessible through bot buttons.
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные локации"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие локации"}, {"command": "map", "description": "Карта локаций"}, {"command": "id", "description": "Мой Telegram ID"}, {"command": "applications", "description": "Заявки (админ)"},
+		{"command": "start", "description": "Главное меню"},
 	}})
 	// Explicitly remove any Mini App menu configured by an older deployment.
 	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})

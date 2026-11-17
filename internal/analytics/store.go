@@ -214,3 +214,21 @@ func (s *Store) Reload() error {
 	return nil
 }
 func (s *Store) Path() string { return s.path }
+
+// WithExclusiveFile serializes an external on-disk restore or snapshot against
+// Record. The in-memory event cache is reloaded from disk before unlocking,
+// even when the external operation reports an error. Callers must not call
+// another Store method from fn (non-reentrant lock).
+func (s *Store) WithExclusiveFile(fn func() error) error {
+	if s == nil {
+		return fn()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := fn()
+	fresh, reloadErr := Open(s.path)
+	if reloadErr == nil {
+		s.events = fresh.events
+	}
+	return errors.Join(err, reloadErr)
+}

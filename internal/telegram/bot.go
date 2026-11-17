@@ -30,6 +30,7 @@ type Bot struct {
 	favorites                 *favoriteStore
 	syncer                    *syncer.Syncer
 	adminIDs                  map[int64]bool
+	leads                     *leadStore
 	http                      *http.Client
 	compareMu                 sync.Mutex
 	compareSelections         map[int64][]string
@@ -38,6 +39,7 @@ type user struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	Username  string `json:"username"`
 }
 type chat struct {
 	ID   int64  `json:"id"`
@@ -87,6 +89,7 @@ func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
 		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
 		[]Button{callbackButton("⭐ Избранное", "favorites"), inlineSearchButton()},
+		[]Button{leadButton("menu", "")},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
 }
@@ -108,9 +111,13 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 	if err != nil {
 		return nil, err
 	}
+	leads, err := openLeadStore(filepath.Join(dataDir, "leads.json"))
+	if err != nil {
+		return nil, err
+	}
 	return &Bot{
 		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
-		adminIDs: ids, http: &http.Client{Timeout: 50 * time.Second},
+		adminIDs: ids, leads: leads, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
 		compareSelections: make(map[int64][]string),
 	}, nil
@@ -280,7 +287,7 @@ func stationPageRows(items []catalog.Location, page int) ([][]Button, int) {
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []Button{menuButton()})
+	rows = append(rows, []Button{leadButton("menu", "")}, []Button{menuButton()})
 	return rows, lastPage
 }
 
@@ -457,6 +464,7 @@ func (b *Bot) requestStationSearch(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "🔎 <b>Поиск локации</b>\n\nНажми «Начать поиск» и вводи название. Telegram покажет подходящие локации по мере набора. Можно также просто отправить название сообщением.", markup(
 		[]Button{inlineSearchButton()},
 		[]Button{callbackButton("⬅️ К списку", "page:0")},
+		[]Button{leadButton("menu", "")},
 		[]Button{menuButton()},
 	))
 }
@@ -487,6 +495,7 @@ func (b *Bot) showFavorites(ctx context.Context, chatID, userID int64) error {
 		return b.Send(ctx, chatID, text, markup(
 			[]Button{callbackButton("📋 Выбрать локацию", "list")},
 			[]Button{callbackButton("🔎 Найти локацию", "search")},
+			[]Button{leadButton("favorites", "")},
 			[]Button{menuButton()},
 		))
 	}
@@ -500,6 +509,7 @@ func (b *Bot) showFavorites(ctx context.Context, chatID, userID int64) error {
 	rows = append(rows,
 		[]Button{callbackButton("⚖️ Сравнить локации", "compare:start")},
 		[]Button{callbackButton("📋 Добавить локацию", "list"), callbackButton("🔎 Поиск", "search")},
+		[]Button{leadButton("favorites", "")},
 		[]Button{menuButton()},
 	)
 	text := fmt.Sprintf("⭐ <b>Избранное</b> · %d\n\nОткрой локацию, убери её из списка или выбери несколько для сравнения.", len(items))
@@ -757,6 +767,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			return nil
 		}
 		ctx = withNavigation(ctx, chatID, u.Callback.Message.MessageID)
+		if strings.HasPrefix(u.Callback.Data, "lead:") {
+			return b.handleLeadCallback(ctx, chatID, u.Callback.From, u.Callback.Data)
+		}
 		switch {
 		case u.Callback.Data == "menu":
 			return b.welcome(ctx, chatID, u.Callback.From)
@@ -856,6 +869,8 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.startComparison(ctx, chatID, m.From.ID, 0)
 	case "🏠 Главное меню":
 		return b.welcome(ctx, chatID, m.From)
+	case "📝 Оставить заявку":
+		return b.openLead(ctx, chatID, m.From.ID, "menu", "")
 	}
 	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
 	if at := strings.IndexByte(cmd, '@'); at >= 0 {
@@ -876,6 +891,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.showMap(ctx, chatID)
 	case "/id":
 		return b.Send(ctx, chatID, fmt.Sprintf("Твой Telegram ID: <code>%d</code>", m.From.ID), nil)
+	case "/applications":
+		if !b.adminIDs[m.From.ID] {
+			return b.Send(ctx, chatID, "Доступно только администратору.", nil)
+		}
+		return b.showAdminLeads(ctx, chatID)
 	case "/reload":
 		if !b.adminIDs[m.From.ID] {
 			return b.Send(ctx, chatID, "Доступно только администратору.", nil)
@@ -921,6 +941,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	}
 	if strings.HasPrefix(cmd, "/") {
 		return b.Send(ctx, chatID, "Неизвестная команда. /help", nil)
+	}
+	if handled, err := b.handleLeadText(ctx, chatID, m.From, input); handled {
+		return err
 	}
 	if mapInput, ok := sharedMapInput(input); ok {
 		point, err := resolveSharedMapPoint(ctx, b.http, mapInput)
@@ -971,8 +994,9 @@ func (b *Bot) Run(ctx context.Context) error {
 	if _, err := b.call(ctx, "getMe", map[string]any{}); err != nil {
 		return fmt.Errorf("Bot token verification: %w", err)
 	}
+	b.startLeadDeliveryRetry(ctx)
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные локации"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие локации"}, {"command": "map", "description": "Карта локаций"}, {"command": "id", "description": "Мой Telegram ID"},
+		{"command": "start", "description": "Главное меню"}, {"command": "list", "description": "Список локаций"}, {"command": "favorites", "description": "Избранные локации"}, {"command": "compare", "description": "Сравнить избранное"}, {"command": "near", "description": "Ближайшие локации"}, {"command": "map", "description": "Карта локаций"}, {"command": "id", "description": "Мой Telegram ID"}, {"command": "applications", "description": "Заявки (админ)"},
 	}})
 	// Explicitly remove any Mini App menu configured by an older deployment.
 	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})

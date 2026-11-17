@@ -46,11 +46,12 @@ func TestNearestSortedAndWithoutCoordinates(t *testing.T) {
 func TestNearButtonIsInlineNotNative(t *testing.T) {
 	menu := startMenuMarkup(defaultProjectMapURL)
 	rows := menu["inline_keyboard"].([][]Button)
-	if len(rows) != 3 || len(rows[2]) != 1 {
+	if len(rows) != 4 || len(rows[2]) != 1 || len(rows[3]) != 1 {
 		t.Fatalf("expected 2x2 menu with inline Nearby below: %+v", rows)
 	}
-	if rows[2][0]["text"] != "📍 Рядом со мной" || rows[2][0]["callback_data"] != "near" {
-		t.Fatalf("Nearby button is not inline: %+v", rows[2][0])
+	if rows[2][0]["callback_data"] != "lead:open:menu" { t.Fatalf("missing lead button above Nearby: %+v", rows[2][0]) }
+	if rows[3][0]["text"] != "📍 Рядом со мной" || rows[3][0]["callback_data"] != "near" {
+		t.Fatalf("Nearby button is not inline: %+v", rows[3][0])
 	}
 	raw, _ := json.Marshal(menu)
 	if strings.Contains(string(raw), "request_location") || strings.Contains(string(raw), "keyboard") && !strings.Contains(string(raw), "inline_keyboard") {
@@ -88,7 +89,7 @@ func TestStationSortRussianAndTwoColumnPages(t *testing.T) {
 		t.Fatal("metro prefix should be removed in labels")
 	}
 	rows, maxPage := stationPageRows(items, 0)
-	if maxPage != 1 || len(rows) != 7 {
+	if maxPage != 1 || len(rows) != 8 {
 		t.Fatalf("unexpected pagination: %d, %d", maxPage, len(rows))
 	}
 	for i := 0; i < 5; i++ {
@@ -380,8 +381,8 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 		t.Fatalf("welcome must contain inline buttons only: %+v", markup)
 	}
 	rows, ok := markup["inline_keyboard"].([]any)
-	if !ok || len(rows) != 3 {
-		t.Fatalf("expected three rows (2x2 + Nearby) in inline menu: %+v", markup)
+	if !ok || len(rows) != 4 {
+		t.Fatalf("expected four rows (2x2 + lead + Nearby) in inline menu: %+v", markup)
 	}
 	assertButton := func(row, column int, label, dataType, data string) {
 		t.Helper()
@@ -396,7 +397,8 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
 	assertButton(1, 1, "🔎 Поиск локации", "switch_inline_query_current_chat", "")
-	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
+	assertButton(2, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
+	assertButton(3, 0, "📍 Рядом со мной", "callback_data", "near")
 	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
 		t.Fatalf("temporary reset message not deleted: %+v", tr.requests)
 	}

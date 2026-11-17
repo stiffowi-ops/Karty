@@ -73,7 +73,8 @@ func regularCardRows(id string, backPage int, saved bool) [][]Button {
  if backPage<0 {backPage=0}
  return [][]Button{
   {callbackButton(label,"fav:toggle:"+id+":"+strconv.Itoa(backPage))},
-  {callbackButton("⭐ Перейти в избранное","favorites"),menuButton()},
-  {callbackButton("⬅️ К списку","page:"+strconv.Itoa(backPage)),inlineSearchButton()},
+  {leadButton("card", id)},
+  {callbackButton("⭐ Перейти в избранное","favorites"),inlineSearchButton()},
+  {callbackButton("⬅️ К списку","page:"+strconv.Itoa(backPage)),menuButton()},
  }
 }

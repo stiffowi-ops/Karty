@@ -85,8 +85,9 @@ func inlineLocationRows(id string, saved bool) [][]Button {
  if saved { label = "✅ Убрать из избранного" }
  return [][]Button{
   {callbackButton(label, "fav:inline:"+id)},
-  {callbackButton("⭐ Перейти в избранное","inline:nav:favorites"),callbackButton("🏠 Главное меню","inline:nav:menu")},
-  {inlineSearchButton()},
+  {callbackButton("📝 Оставить заявку", "inline:nav:lead:"+id)},
+  {callbackButton("⭐ Перейти в избранное","inline:nav:favorites"),inlineSearchButton()},
+  {callbackButton("🏠 Главное меню","inline:nav:menu")},
  }
 }
 
@@ -161,6 +162,9 @@ func (b *Bot) toggleInlineFavorite(ctx context.Context, callback *callbackQuery)
 
 func (b *Bot) inlineNavigate(ctx context.Context, callback *callbackQuery) error {
  if callback==nil{return nil}
+ if strings.HasPrefix(callback.Data,"inline:nav:lead:") {
+  return b.openInlineLead(ctx,callback)
+ }
  if callback.From.ID<=0{return b.replyInlineCallback(ctx,callback,"Не удалось открыть раздел.")}
  // Inline callbacks often have only inline_message_id. Always deliver
  // personal sections to the caller's private chat, never to the source group.

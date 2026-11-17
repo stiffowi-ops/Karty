@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"locationbot/internal/catalog"
+ "locationbot/internal/analytics"
 )
 
 // Inline search uses Telegram's native suggestions, updated as the user types.
@@ -140,6 +141,7 @@ func (b *Bot) toggleInlineFavorite(ctx context.Context, callback *callbackQuery)
  }
  saved,err:=b.favorites.Toggle(callback.From.ID,id)
  if err!=nil{return b.replyInlineCallback(ctx,callback,"Не удалось обновить избранное.")}
+ kind:=analytics.FavoriteRemoved; if saved {kind=analytics.FavoriteAdded}; b.recordLocationAnalytics(callback.From.ID,id,kind)
  // Telegram may supply inline_message_id without callback.Message even in
  // private chats. Updating a shared card changes only its button label; the
  // personal favorites list is never sent into that chat.

@@ -30,6 +30,7 @@ type Location struct {
 	ImageExt       string   `json:"image_ext,omitempty"`
 	ImageURL       string   `json:"image_url,omitempty"`
 	SourceModified string   `json:"source_modified,omitempty"`
+ Sections []CardSection `json:"sections,omitempty"`
 }
 
 type Override struct {
@@ -50,6 +51,7 @@ type Override struct {
 
 type Store struct {
 	mu                              sync.RWMutex
+ adminMu sync.Mutex
 	locations                       []Location
 	dataDir, seedPath, overridePath string
 	useBundled bool
@@ -255,7 +257,8 @@ func (s *Store) Reload() error {
 			}
 		}
 	}
-	sort.Slice(loc, func(i, j int) bool { return loc[i].ID < loc[j].ID })
+	if err := s.applyAdminCards(loc); err != nil { return err }
+ sort.Slice(loc, func(i, j int) bool { return loc[i].ID < loc[j].ID })
 	s.mu.Lock()
 	s.locations = loc
 	s.mu.Unlock()

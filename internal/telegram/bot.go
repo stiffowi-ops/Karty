@@ -803,6 +803,10 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
 	}
 	if u.Callback != nil {
+  if strings.HasPrefix(u.Callback.Data,"lead:take:") || strings.HasPrefix(u.Callback.Data,"lead:done:") {
+    b.answerCallback(ctx,u.Callback.ID)
+    return b.handleLeadAdminCallback(ctx,u.Callback)
+  }
   if strings.HasPrefix(u.Callback.Data,"adm:") {
    b.answerCallback(ctx,u.Callback.ID)
    if u.Callback.Message == nil || u.Callback.Message.Chat.Type != "private" || !b.isAdmin(u.Callback.From.ID) || u.Callback.Message.Chat.ID != u.Callback.From.ID {return nil}

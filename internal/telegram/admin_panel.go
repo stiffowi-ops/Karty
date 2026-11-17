@@ -83,45 +83,21 @@ func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
 	))
 }
 func (b *Bot) showAdminTools(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "🛠 <b>Система Karty</b>\n\nЗдесь находятся служебные действия. Они доступны только администраторам.", markup(
+	return b.Send(ctx, chatID, "🛠 <b>Система</b>\n\nЗдесь находятся служебные действия. Они доступны только администраторам.", markup(
 		[]Button{callbackButton("☁️ Синхронизация", "adm:sync"), callbackButton("🔄 Перезагрузить каталог", "adm:reload")},
 		[]Button{callbackButton("📍 Состояние каталога", "adm:status"), callbackButton("📦 Бэкапы", "adm:backup")},
 		[]Button{callbackButton("⬅️ Админ-панель", "adm:menu")},
 	))
 }
 func (b *Bot) adminLeadCount() int {
-	// Kept in the runtime volume; avoid depending on the admin UI's state.
-	raw, err := os.ReadFile(filepath.Join(b.store.DataDir(), "leads.json"))
-	if err != nil {
-		return 0
-	}
-	var state struct {
-		Submitted map[string]json.RawMessage `json:"submitted"`
-	}
-	if json.Unmarshal(raw, &state) != nil {
-		return 0
-	}
-	return len(state.Submitted)
+	if b.leads == nil {return 0}
+	return len(b.leads.allSubmitted())
 }
 func (b *Bot) adminLeadDates() map[string][]time.Time {
-	raw, err := os.ReadFile(filepath.Join(b.store.DataDir(), "leads.json"))
-	if err != nil {
-		return nil
-	}
-	var state struct {
-		Submitted map[string]struct {
-			LocationID string    `json:"location_id"`
-			CreatedAt  time.Time `json:"created_at"`
-		} `json:"submitted"`
-	}
-	if json.Unmarshal(raw, &state) != nil {
-		return nil
-	}
-	result := map[string][]time.Time{}
-	for _, app := range state.Submitted {
-		if app.LocationID != "" {
-			result[app.LocationID] = append(result[app.LocationID], app.CreatedAt)
-		}
+	result:=map[string][]time.Time{}
+	if b.leads == nil {return result}
+	for _,app:=range b.leads.allSubmitted() {
+		if app.LocationID!="" {result[app.LocationID]=append(result[app.LocationID],app.CreatedAt)}
 	}
 	return result
 }
@@ -779,7 +755,7 @@ func (b *Bot) showBackupMenu(ctx context.Context, chatID int64) error {
 	if len(list) > 0 {
 		last = strings.TrimSuffix(strings.TrimPrefix(list[len(list)-1], "auto-"), ".zip")
 	}
-	info := fmt.Sprintf("📦 <b>Резервные копии Karty</b>\n\nЕжедневный бэкап: 03:00 UTC\nХраним последние %d архивов на сервере.\nПоследняя копия: <b>%s</b>\n\nАрхив содержит заявки, карточки и избранное. Отправляйте ZIP только администраторам.", automaticBackupKeep, last)
+	info := fmt.Sprintf("📦 <b>Резервные копии</b>\n\nЕжедневный бэкап: 03:00 UTC\nХраним последние %d архивов на сервере.\nПоследняя копия: <b>%s</b>\n\nАрхив содержит заявки, карточки и избранное. Отправляйте ZIP только администраторам.", automaticBackupKeep, last)
 	return b.Send(ctx, chatID, info, markup(
 		[]Button{callbackButton("📥 Скачать свежий ZIP", "adm:export")},
 		[]Button{callbackButton("📥 Скачать последний авто ZIP", "adm:exportauto")},
@@ -794,7 +770,7 @@ func (b *Bot) sendAdminBackup(ctx context.Context, chatID int64) error {
 	if err != nil {
 		return err
 	}
-	filename := "karty-backup-" + time.Now().UTC().Format("20060102-150405") + ".zip"
+	filename := "backup-" + time.Now().UTC().Format("20060102-150405") + ".zip"
 	return b.sendAdminDocument(ctx, chatID, data, filename)
 }
 func (b *Bot) sendLatestAutoBackup(ctx context.Context, chatID int64) error {
@@ -1070,6 +1046,15 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		return b.showLocationInsights(ctx, chatID, parts[2], days)
 	case data == "adm:leads":
 		return b.showAdminLeads(ctx, chatID)
+	case strings.HasPrefix(data,"adm:leadtake:"):
+		number,err:=strconv.ParseInt(strings.TrimPrefix(data,"adm:leadtake:"),10,64)
+		if err!=nil || number<=0{return b.showAdminLeads(ctx,chatID)}
+		lead,_,err:=b.leads.takeInWork(number,from.ID)
+		if err!=nil {
+			return b.Send(ctx,chatID,"Не удалось изменить статус заявки: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("⬅️ К заявкам","adm:leads")}))
+		}
+		b.refreshLeadAdminMessages(ctx,lead)
+		return b.showAdminLeads(ctx,chatID)
 	case data == "adm:tools":
 		return b.showAdminTools(ctx, chatID)
 	case data == "adm:reload":

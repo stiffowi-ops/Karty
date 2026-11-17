@@ -14,49 +14,54 @@ import (
 )
 
 type leadSnapshot struct {
-	Drafts    map[string]json.RawMessage `json:"drafts"`
+	Drafts map[string]json.RawMessage `json:"drafts"`
 	Submitted map[string]json.RawMessage `json:"submitted"`
-	NextID    int64                      `json:"next_id"`
+	History []json.RawMessage `json:"history,omitempty"`
+	NextID int64 `json:"next_id"`
 }
 
-func parseLeads(raw []byte) (leadSnapshot, error) {
+type leadIdentity struct {
+	Number int64 `json:"number"`
+	UserID int64 `json:"user_id"`
+	TakenInWork bool `json:"taken_in_work"`
+}
+func decodeLead(raw json.RawMessage) (leadIdentity,error) {
+	var l leadIdentity
+	err:=json.Unmarshal(raw,&l)
+	if err!=nil{return l,err}
+	if l.Number<=0 || l.UserID<0 {return l,errors.New("invalid application identity")}
+	return l,nil
+}
+func parseLeads(raw []byte) (leadSnapshot,error) {
 	var result leadSnapshot
-	if len(raw) == 0 {
-		raw = []byte(`{"drafts":{},"submitted":{},"next_id":0}`)
+	if len(bytes.TrimSpace(raw))==0 {raw=[]byte(`{"drafts":{},"submitted":{},"next_id":0}`)}
+	if err:=json.Unmarshal(raw,&result);err!=nil{return result,err}
+	if result.Drafts==nil{result.Drafts=map[string]json.RawMessage{}}
+	if result.Submitted==nil{result.Submitted=map[string]json.RawMessage{}}
+	if result.History==nil{result.History=[]json.RawMessage{}}
+	if result.NextID<0{return result,errors.New("negative application counter")}
+	seen:=map[int64]bool{}
+	check:=func(raw json.RawMessage,expectedUser string)error{
+		d,err:=decodeLead(raw)
+		if err!=nil{return err}
+		if expectedUser!="" && d.UserID>0 && expectedUser!=fmt.Sprint(d.UserID) {return errors.New("application user key mismatch")}
+		if expectedUser=="" && d.UserID<=0 {return errors.New("history application missing user ID")}
+		if d.Number>result.NextID{return errors.New("application counter is lower than stored number")}
+		if seen[d.Number]{return fmt.Errorf("duplicate application number %d",d.Number)}
+		seen[d.Number]=true
+		return nil
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return result, err
+	for user,lead:=range result.Submitted {
+		if !digitsOnly(user){return result,fmt.Errorf("invalid user ID %s",user)}
+		if err:=check(lead,user);err!=nil{return result,err}
 	}
-	if result.Submitted == nil {
-		result.Submitted = map[string]json.RawMessage{}
+	for _,lead:=range result.History {
+		if err:=check(lead,"");err!=nil{return result,err}
 	}
-	if result.Drafts == nil {
-		result.Drafts = map[string]json.RawMessage{}
+	for user:=range result.Drafts {
+		if !digitsOnly(user){return result,fmt.Errorf("invalid draft user ID %s",user)}
 	}
-	if result.NextID < 0 {
-		return result, fmt.Errorf("negative application counter")
-	}
-	for user, data := range result.Submitted {
-		var details struct {
-			Number int64 `json:"number"`
-			UserID int64 `json:"user_id"`
-		}
-		if err := json.Unmarshal(data, &details); err != nil {
-			return result, err
-		}
-		if !digitsOnly(user) || details.Number <= 0 {
-			return result, fmt.Errorf("invalid application %s", user)
-		}
-		if details.Number > result.NextID {
-			return result, fmt.Errorf("application counter is lower than stored number")
-		}
-	}
-	for user := range result.Drafts {
-		if !digitsOnly(user) {
-			return result, fmt.Errorf("invalid draft user ID")
-		}
-	}
-	return result, nil
+	return result,nil
 }
 func digitsOnly(value string) bool {
 	if value == "" {
@@ -70,52 +75,96 @@ func digitsOnly(value string) bool {
 	return true
 }
 
-func mergeLeads(archived, current []byte) ([]byte, error) {
-	old, err := parseLeads(archived)
-	if err != nil {
-		return nil, err
+// Merge archived and current applications without resurrecting an old pending
+// request after it has already been taken into work. Current state wins for a
+// given application; all distinct numbers survive in the permanent history.
+func mergeLeads(archived, current []byte) ([]byte,error) {
+	old,err:=parseLeads(archived);if err!=nil{return nil,err}
+	now,err:=parseLeads(current);if err!=nil{return nil,err}
+	out:=leadSnapshot{
+		Drafts:map[string]json.RawMessage{},
+		Submitted:map[string]json.RawMessage{},
+		History:[]json.RawMessage{},
+		NextID:max(old.NextID,now.NextID),
 	}
-	now, err := parseLeads(current)
-	if err != nil {
-		return nil, err
-	}
-	if old.NextID < now.NextID {
-		old.NextID = now.NextID
-	}
-	used := map[int64]bool{}
-	for user, raw := range now.Submitted {
-		old.Submitted[user] = raw
-		var x struct {
-			Number int64 `json:"number"`
+	for k,v:=range old.Drafts{out.Drafts[k]=v}
+	for k,v:=range now.Drafts{out.Drafts[k]=v}
+	used:=map[int64]int64{}
+	addCurrent:=func(raw json.RawMessage, userKey string, historical bool) error {
+		lead,e:=decodeLead(raw);if e!=nil{return e}
+		if lead.UserID==0 && userKey!="" {
+			var id int64
+			id,e=json.Number(userKey).Int64();if e!=nil{return e}
+			lead.UserID=id
 		}
-		_ = json.Unmarshal(raw, &x)
-		used[x.Number] = true
+		if lead.UserID<=0{return errors.New("application missing user ID")}
+		if prior,exists:=used[lead.Number];exists && prior!=lead.UserID{return errors.New("duplicate current application number")}
+		used[lead.Number]=lead.UserID
+		if historical{out.History=append(out.History,raw)}else{out.Submitted[userKey]=raw}
+		return nil
 	}
-	for user, raw := range old.Submitted {
-		if _, exists := now.Submitted[user]; exists {
-			continue
+	for _,raw:=range now.History{
+		if e:=addCurrent(raw,"",true);e!=nil{return nil,e}
+	}
+	for user,raw:=range now.Submitted{
+		if e:=addCurrent(raw,user,false);e!=nil{return nil,e}
+	}
+	// The identity of an application is its global number and user ID.
+	// Do not restore an archived pending copy if current history already
+	// contains the same (now processed) application.
+	addArchive:=func(raw json.RawMessage,userKey string,historical bool)error{
+		lead,e:=decodeLead(raw);if e!=nil{return e}
+		if lead.UserID==0 && userKey!=""{
+			lead.UserID,e=json.Number(userKey).Int64();if e!=nil{return e}
 		}
-		var x map[string]any
-		if err := json.Unmarshal(raw, &x); err != nil {
-			return nil, err
+		if lead.UserID<=0{return errors.New("archived application missing user ID")}
+		originalNumber:=lead.Number
+		if prior,exists:=used[lead.Number];exists {
+			if prior==lead.UserID{return nil}
+			// Collision between two distinct legacy copies: retain the
+			// current number and assign a new globally unique archive ID.
+			out.NextID++
+			lead.Number=out.NextID
 		}
-		number := int64(x["number"].(float64))
-		if used[number] {
-			old.NextID++
-			number = old.NextID
-			x["number"] = number
-			raw, _ = json.Marshal(x)
-			old.Submitted[user] = raw
+		if userKey==""{userKey=fmt.Sprint(lead.UserID)}
+		if !historical {
+			if _,present:=out.Submitted[userKey];present{
+				historical=true
+			}
 		}
-		used[number] = true
+		if lead.Number!=originalNumber || lead.UserID!=0 {
+			var fields map[string]json.RawMessage
+			if e:=json.Unmarshal(raw,&fields);e!=nil{return e}
+			fields["number"],_=json.Marshal(lead.Number)
+			fields["user_id"],_=json.Marshal(lead.UserID)
+			raw,e=json.Marshal(fields);if e!=nil{return e}
+		}
+		used[lead.Number]=lead.UserID
+		if historical {
+			out.History=append(out.History,raw)
+		}else{
+			out.Submitted[userKey]=raw
+		}
+		return nil
 	}
-	for user, draft := range now.Drafts {
-		old.Drafts[user] = draft
+	for _,raw:=range old.History {
+		if e:=addArchive(raw,"",true);e!=nil{return nil,e}
 	}
-	for user := range old.Submitted {
-		delete(old.Drafts, user)
+	for user,raw:=range old.Submitted{
+		if e:=addArchive(raw,user,false);e!=nil{return nil,e}
 	}
-	return json.MarshalIndent(old, "", "  ")
+	for user,raw:=range out.Submitted{
+		var lead leadIdentity
+		if e:=json.Unmarshal(raw,&lead);e!=nil{return nil,e}
+		if !lead.TakenInWork{delete(out.Drafts,user)}
+	}
+	sort.Slice(out.History,func(i,j int)bool{
+		var a,b leadIdentity
+		_ = json.Unmarshal(out.History[i],&a)
+		_ = json.Unmarshal(out.History[j],&b)
+		return a.Number<b.Number
+	})
+	return json.MarshalIndent(out,"","  ")
 }
 
 func mergeAnalytics(archived, current []byte) ([]byte, error) {

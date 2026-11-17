@@ -249,15 +249,9 @@ func Examine(raw []byte) (Archive, error) {
 			return Archive{}, err
 		}
 	}
-	var lead struct {
-		Submitted map[string]json.RawMessage `json:"submitted"`
-	}
-	if len(files["leads.json"]) > 0 {
-		if err = json.Unmarshal(files["leads.json"], &lead); err != nil {
-			return Archive{}, err
-		}
-	}
-	result := Inspection{CreatedAt: manifest.CreatedAt, Locations: len(locations), Leads: len(lead.Submitted)}
+	lead,err:=parseLeads(files["leads.json"])
+	if err!=nil{return Archive{},err}
+	result := Inspection{CreatedAt: manifest.CreatedAt, Locations: len(locations), Leads: len(lead.Submitted)+len(lead.History)}
 	for userID, ids := range favorites {
 		if !digitsOnly(userID) {
 			return Archive{}, errors.New("неверный Telegram ID в избранном")

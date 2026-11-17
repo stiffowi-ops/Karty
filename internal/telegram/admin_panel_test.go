@@ -140,7 +140,7 @@ func TestAdminBackupExportIsZIPDocument(t *testing.T) {
 	if len(tr.calls) == 0 || !strings.Contains(tr.calls[len(tr.calls)-1], "/sendDocument") {
 		t.Fatalf("backup not sent as Telegram document %v", tr.calls)
 	}
-	if !bytes.Contains(tr.lastDocument, []byte("karty-backup-")) {
+	if !bytes.Contains(tr.lastDocument, []byte("backup-")) {
 		t.Fatal("missing archive filename")
 	}
 }

@@ -433,6 +433,9 @@ func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
 	if !strings.Contains(message,"Скрепка") || !strings.Contains(message,"Геопозиция") {
 		t.Fatalf("instructions missing: %q",message)
 	}
+	if strings.Contains(message,"Telegram не позволяет запросить геопозицию") || strings.Contains(message,"Геопозиция не сохраняется в базе") || strings.Contains(message,"Бот покажет ближайшие точки") {
+		t.Fatalf("obsolete technical disclaimer remains: %q",message)
+	}
 	kb,_ := tr.payloads[1]["reply_markup"].(map[string]any)
 	if _,ok:=kb["inline_keyboard"];!ok || kb["keyboard"]!=nil{
 		t.Fatalf("manual location prompt has wrong keyboard: %+v",kb)

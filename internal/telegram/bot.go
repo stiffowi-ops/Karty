@@ -920,7 +920,7 @@ func (b *Bot) showMap(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "<b>Карта локаций</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
-	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, "📍 <b>Рядом со мной</b>\n\nЧтобы найти ближайшие локации, нажми <b>📎 Скрепка → Геопозиция → Отправить текущую геопозицию</b>.\n\nTelegram не позволяет запросить геопозицию напрямую из inline-кнопки. Бот покажет ближайшие точки, когда получит местоположение. Геопозиция не сохраняется в базе.", markup(
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, "📍 <b>Рядом со мной</b>\n\nВ мобильном Telegram отправь точку через <b>📎 Скрепка → Геопозиция → Отправить текущую геопозицию</b>.", markup(
 		[]Button{callbackButton("⬅️ К списку локаций", "page:0"), menuButton()},
 	))
 }

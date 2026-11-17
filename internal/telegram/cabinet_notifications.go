@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Delays count working time inside the daily Moscow office window.
+// Delays count working time inside the Monday-Friday Moscow office window.
 const supplementReminderDelay = 2 * time.Hour
 const supplementEscalationDelay = 4 * time.Hour
 
@@ -110,7 +110,7 @@ func pendingCaseReminderText(l leadApplication, stage string) string {
 		title = "‼️ Заявка не взята в работу"
 		delay = 4
 	}
-	return fmt.Sprintf("<b>%s · №%04d</b>\n\nОжидает обработки более %d рабочих часов.\nРабочее время: 09:00–19:00 МСК.\nПолучена: %s\n\n<b>Клиент:</b> %s\n<b>Телефон:</b> %s\n\n<b>Локации</b>\n%s", title, l.Number, delay, caseTime(l.CreatedAt), html.EscapeString(l.Name), html.EscapeString(l.Phone), locationLines(l.locations()))
+	return fmt.Sprintf("<b>%s · №%04d</b>\n\nОжидает обработки более %d рабочих часов.\nРабочее время: пн–пт, 09:00–19:00 МСК.\nПолучена: %s\n\n<b>Клиент:</b> %s\n<b>Телефон:</b> %s\n\n<b>Локации</b>\n%s", title, l.Number, delay, caseTime(l.CreatedAt), html.EscapeString(l.Name), html.EscapeString(l.Phone), locationLines(l.locations()))
 }
 func (b *Bot) notifyPendingCaseReminder(l leadApplication, now time.Time, send caseNoticeSender) {
 	if l.TakenInWork || l.isResolved() {

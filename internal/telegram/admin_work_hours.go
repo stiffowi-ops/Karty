@@ -8,15 +8,20 @@ import (
 const adminWorkStartHour = 9
 const adminWorkEndHour = 19
 
-// The agreed calendar is daily, 09:00 inclusive to 19:00 exclusive, Moscow.
+// The agreed calendar is Monday-Friday, 09:00 inclusive to 19:00 exclusive.
 // A fixed Moscow zone makes it independent of the server's local timezone.
-func adminWorkTime(at time.Time) bool {
-	hour := at.In(visitTZ).Hour()
-	return hour >= adminWorkStartHour && hour < adminWorkEndHour
+func adminWorkday(at time.Time) bool {
+	day := at.In(visitTZ).Weekday()
+	return day != time.Saturday && day != time.Sunday
 }
 
-// Count only the intersection with each day's work window. Since this daily
-// Moscow calendar has no DST, full days can be counted in constant time.
+func adminWorkTime(at time.Time) bool {
+	hour := at.In(visitTZ).Hour()
+	return adminWorkday(at) && hour >= adminWorkStartHour && hour < adminWorkEndHour
+}
+
+// Count only weekday work windows. Full weeks take constant time; the tail
+// checks at most six days, irrespective of the age of the application.
 func adminWorkingDuration(start, end time.Time) time.Duration {
 	if start.IsZero() || end.IsZero() || !end.After(start) {
 		return 0
@@ -26,6 +31,9 @@ func adminWorkingDuration(start, end time.Time) time.Duration {
 	midnight := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, visitTZ) }
 	workDay := time.Duration(adminWorkEndHour-adminWorkStartHour) * time.Hour
 	withinDay := func(t time.Time) time.Duration {
+		if !adminWorkday(t) {
+			return 0
+		}
 		elapsed := t.Sub(midnight(t).Add(adminWorkStartHour * time.Hour))
 		if elapsed < 0 {
 			return 0
@@ -35,8 +43,15 @@ func adminWorkingDuration(start, end time.Time) time.Duration {
 		}
 		return elapsed
 	}
-	days := midnight(end).Sub(midnight(start)) / (24 * time.Hour)
-	return time.Duration(days)*workDay + withinDay(end) - withinDay(start)
+	startDay := midnight(start)
+	days := int(midnight(end).Sub(startDay) / (24 * time.Hour))
+	weekdays := (days / 7) * 5
+	for day := 0; day < days%7; day++ {
+		if adminWorkday(startDay.AddDate(0, 0, day)) {
+			weekdays++
+		}
+	}
+	return time.Duration(weekdays)*workDay + withinDay(end) - withinDay(start)
 }
 
 func adminReminderStage(created, now time.Time) string {

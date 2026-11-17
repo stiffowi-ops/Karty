@@ -34,10 +34,13 @@ func TestAdminDashboardAndRankingJumpToLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg, kb := lastAdminMessage(t, tr)
-	for _, want := range []string{"Локаций", "Просмотров за 7 дней", "Сейчас в избранном", "Заявки", "Система"} {
+	for _, want := range []string{"Панель управления", "редактировать и добавлять локации", "Заявки", "Система"} {
 		if !strings.Contains(msg+kb, want) {
 			t.Fatalf("missing %q: %s %s", want, msg, kb)
 		}
+	}
+	if strings.Contains(msg, "Локаций:") || strings.Contains(msg, "Заявок:") || strings.Contains(msg, "управления Karty") {
+		t.Fatalf("admin dashboard should be short and not expose counters: %s", msg)
 	}
 	if err := b.showAdminStats(ctx, 100, "views", 30); err != nil {
 		t.Fatal(err)

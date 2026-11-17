@@ -19,25 +19,25 @@ import (
 	"time"
 
 	"locationbot/internal/adminbackup"
-	"locationbot/internal/analytics"
 	"locationbot/internal/catalog"
 )
 
 type adminSession struct {
-	LocationID      string
-	OriginalHash    string
-	Draft           catalog.CardRevision
-	Field           string
-	SectionIndex    int
-	Backup          adminbackup.Archive
-	HasBackup       bool
-	AwaitingBackup  bool
-	StatsMetric     string
-	StatsDays       int
-	HistoryLocation string
-	HistoryPage     int
-	RestoreIndex    int
-	RestoreHash     string
+	LocationID       string
+	OriginalHash     string
+	Draft            catalog.CardRevision
+	Field            string
+	SectionIndex     int
+	Backup           adminbackup.Archive
+	HasBackup        bool
+	AwaitingBackup   bool
+	StatsMetric      string
+	StatsDays        int
+	HistoryLocation  string
+	HistoryPage      int
+	RestoreIndex     int
+	RestoreHash      string
+	CreatingLocation bool
 }
 type adminRevisionEvent struct {
 	At         time.Time            `json:"at"`
@@ -74,22 +74,7 @@ func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
 	return rows
 }
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
-	count := len(b.store.List())
-	leads := b.adminLeadCount()
-	saved := 0
-	for _, n := range b.adminCurrentFavorites() {
-		saved += n
-	}
-	views := 0
-	if b.metrics != nil {
-		cutoff := time.Now().UTC().AddDate(0, 0, -7)
-		for _, event := range b.metrics.Snapshot() {
-			if event.Kind == analytics.View && !event.At.Before(cutoff) {
-				views++
-			}
-		}
-	}
-	msg := fmt.Sprintf("⚙️ <b>Панель управления Karty</b>\n\n📍 Локаций: <b>%d</b> · 📨 Заявок: <b>%d</b>\n👁 Просмотров за 7 дней: <b>%d</b>\n⭐ Сейчас в избранном: <b>%d</b>\n\nВыберите раздел:", count, leads, views, saved)
+	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать и добавлять локации, просматривать аналитику и заявки, управлять резервными копиями, историей изменений и настройками бота."
 	return b.Send(ctx, chatID, msg, markup(
 		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Локации", "adm:locations:0")},
 		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("🕘 История", "adm:history")},
@@ -290,8 +275,12 @@ func (b *Bot) showAdminLocations(ctx context.Context, chatID int64, page int) er
 		until = len(locations)
 	}
 	rows := [][]Button{}
-	for i := from; i < until; i++ {
-		rows = append(rows, []Button{callbackButton(buttonLabel(locations[i].Title), "adm:edit:"+locations[i].ID)})
+	for i := from; i < until; i += 2 {
+		row := []Button{callbackButton(buttonLabel(locations[i].Title), "adm:edit:"+locations[i].ID)}
+		if i+1 < until {
+			row = append(row, callbackButton(buttonLabel(locations[i+1].Title), "adm:edit:"+locations[i+1].ID))
+		}
+		rows = append(rows, row)
 	}
 	nav := []Button{}
 	if page > 0 {
@@ -303,10 +292,74 @@ func (b *Bot) showAdminLocations(ctx context.Context, chatID int64, page int) er
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []Button{callbackButton("🔎 Найти локацию", "adm:locsearch")})
+	rows = append(rows, []Button{callbackButton("🔎 Найти локацию", "adm:locsearch"), callbackButton("➕ Добавить локацию", "adm:new")})
 	rows = append(rows, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
 	return b.Send(ctx, chatID, fmt.Sprintf("📍 <b>Редактор локаций</b>\nСтраница %d из %d. Выберите карточку для редактирования:", page+1, pages), markup(rows...))
 }
+
+// A new location is an unpublished draft until the administrator confirms it.
+func (b *Bot) startAdminNewLocation(ctx context.Context, chatID, userID int64) error {
+	id, err := catalog.NewAdminLocationID()
+	if err != nil {
+		return err
+	}
+	session := b.adminSession(userID)
+	*session = adminSession{
+		LocationID: id, CreatingLocation: true, Field: "new_title",
+		Draft: catalog.CardRevision{Sections: []catalog.CardSection{}},
+	}
+	return b.Send(ctx, chatID, "➕ <b>Новая локация</b>\n\nВведите название новой локации обычным сообщением. Затем сможете добавить ориентир, статус, описание, разделы карточки и опубликовать её.\n\nДо публикации локация не видна пользователям.", markup(
+		[]Button{callbackButton("❌ Отмена", "adm:locations:0")},
+	))
+}
+
+// Every edit displays the currently saved draft value before accepting input.
+func adminCurrentValue(session *adminSession, field string) (string, string, bool) {
+	switch field {
+	case "title":
+		return "Название", session.Draft.Title, true
+	case "line_status":
+		return "Статус", session.Draft.LineStatus, true
+	case "landmarks":
+		return "Ориентир", session.Draft.Landmarks, true
+	case "map_url":
+		return "Ссылка на карту", session.Draft.MapURL, true
+	case "description":
+		return "Краткое описание", session.Draft.Description, true
+	case "category":
+		return "Категория", session.Draft.Category, true
+	case "section_title", "section_body":
+		if session.SectionIndex < 0 || session.SectionIndex >= len(session.Draft.Sections) {
+			return "", "", false
+		}
+		section := session.Draft.Sections[session.SectionIndex]
+		if field == "section_title" {
+			return "Название раздела", section.Title, true
+		}
+		return "Описание раздела", section.Body, true
+	}
+	return "", "", false
+}
+func (b *Bot) showAdminFieldPrompt(ctx context.Context, chatID int64, session *adminSession, field string) error {
+	label, value, ok := adminCurrentValue(session, field)
+	if !ok {
+		return b.showAdminEditor(ctx, chatID, session)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "Не заполнено"
+	}
+	// Prevent Telegram's 4096 character message limit on long descriptions.
+	current := html.EscapeString(limitRunes(value, 2000))
+	back := "adm:editor"
+	if strings.HasPrefix(field, "section_") {
+		back = "adm:sections"
+	}
+	return b.Send(ctx, chatID, "✏️ <b>"+html.EscapeString(label)+"</b>\n\n<b>Текущее значение:</b>\n"+current+"\n\nОтправьте новое значение обычным сообщением. Изменение останется черновиком до публикации.", markup(
+		[]Button{callbackButton("❌ Отмена", back)},
+	))
+}
+
 func (b *Bot) startAdminEditor(ctx context.Context, chatID, userID int64, id string) error {
 	loc, ok := b.store.Find(id)
 	if !ok {
@@ -314,6 +367,7 @@ func (b *Bot) startAdminEditor(ctx context.Context, chatID, userID int64, id str
 	}
 	session := b.adminSession(userID)
 	session.LocationID = id
+	session.CreatingLocation = false
 	session.Draft = catalog.Revision(loc)
 	session.OriginalHash = catalog.RevisionHash(session.Draft)
 	session.Field = ""
@@ -323,14 +377,23 @@ func (b *Bot) showAdminEditor(ctx context.Context, chatID int64, s *adminSession
 	name := html.EscapeString(s.Draft.Title)
 	rows := [][]Button{
 		{callbackButton("✏️ Название", "adm:field:title"), callbackButton("📌 Статус", "adm:field:line_status")},
-		{callbackButton("📍 Ориентир", "adm:field:landmarks"), callbackButton("🗺 Ссылка карты", "adm:field:map_url")},
+		{callbackButton("📍 Ориентир", "adm:field:landmarks"), callbackButton("🗺 Ссылка на карту", "adm:field:map_url")},
 		{callbackButton("📝 Краткое описание", "adm:field:description"), callbackButton("📌 Категория", "adm:field:category")},
 		{callbackButton("🧩 Разделы карточки", "adm:sections")},
-		{callbackButton("📊 Показатели", "adm:insight:"+s.LocationID+":30"), callbackButton("🕘 История", "adm:histloc:"+s.LocationID)},
-		{callbackButton("👁 Предпросмотр", "adm:preview"), callbackButton("✅ Опубликовать", "adm:publish")},
-		{callbackButton("❌ Отменить", "adm:locations:0"), callbackButton("⬅️ Админ-панель", "adm:menu")},
 	}
-	return b.Send(ctx, chatID, fmt.Sprintf("✏️ <b>Редактор карточки</b>\n\n<b>%s</b> · ID <code>%s</code>\nРазделов: %d\n\nИзменения не увидят пользователи до публикации.", name, html.EscapeString(s.LocationID), len(s.Draft.Sections)), markup(rows...))
+	header := "✏️ <b>Редактор карточки</b>"
+	publish := "✅ Опубликовать"
+	if s.CreatingLocation {
+		header = "➕ <b>Новая локация · черновик</b>"
+		publish = "✅ Добавить локацию"
+	} else {
+		rows = append(rows, []Button{callbackButton("📊 Показатели", "adm:insight:"+s.LocationID+":30"), callbackButton("🕘 История", "adm:histloc:"+s.LocationID)})
+	}
+	rows = append(rows,
+		[]Button{callbackButton("👁 Предпросмотр", "adm:preview"), callbackButton(publish, "adm:publish")},
+		[]Button{callbackButton("❌ Отменить", "adm:locations:0"), callbackButton("⬅️ Админ-панель", "adm:menu")},
+	)
+	return b.Send(ctx, chatID, fmt.Sprintf("%s\n\n<b>%s</b> · ID <code>%s</code>\nРазделов: %d\n\nИзменения не увидят пользователи до публикации.", header, name, html.EscapeString(s.LocationID), len(s.Draft.Sections)), markup(rows...))
 }
 func (b *Bot) showAdminSections(ctx context.Context, chatID int64, s *adminSession) error {
 	rows := [][]Button{}
@@ -364,12 +427,17 @@ func (b *Bot) showAdminSection(ctx context.Context, chatID int64, s *adminSessio
 }
 func (b *Bot) renderAdminPreview(ctx context.Context, chatID int64, s *adminSession) error {
 	loc, found := b.store.Find(s.LocationID)
-	if !found {
+	if !found && !s.CreatingLocation {
 		return errors.New("location missing")
+	}
+	if s.CreatingLocation {
+		loc = catalog.Location{ID: s.LocationID}
 	}
 	loc.Title = s.Draft.Title
 	loc.LineStatus = s.Draft.LineStatus
 	loc.Landmarks = s.Draft.Landmarks
+	loc.Description = s.Draft.Description
+	loc.Category = s.Draft.Category
 	loc.MapURL = s.Draft.MapURL
 	loc.Sections = append([]catalog.CardSection{}, s.Draft.Sections...)
 	return b.Send(ctx, chatID, "👁 <b>Предпросмотр карточки</b>\n\n"+cardPreviewHTML(loc, b.mapURL), markup([]Button{callbackButton("⬅️ Редактировать", "adm:editor"), callbackButton("✅ Опубликовать", "adm:publish")}))
@@ -439,7 +507,37 @@ func atomicAdminFile(path string, data []byte) error {
 	}
 	return os.Rename(f.Name(), path)
 }
+func (b *Bot) publishNewAdminLocation(ctx context.Context, chatID, userID int64, s *adminSession) error {
+	if err := s.Draft.Validate(); err != nil {
+		return b.Send(ctx, chatID, "Не удалось опубликовать: "+html.EscapeString(err.Error()), markup([]Button{callbackButton("⬅️ К редактору", "adm:editor")}))
+	}
+	loc := catalog.Location{
+		ID: s.LocationID, Title: s.Draft.Title, Category: s.Draft.Category,
+		Description: s.Draft.Description, Rating: s.Draft.Rating,
+		LineStatus: s.Draft.LineStatus, Landmarks: s.Draft.Landmarks, MapURL: s.Draft.MapURL,
+		Latitude: s.Draft.Latitude, Longitude: s.Draft.Longitude,
+		Sections: append([]catalog.CardSection{}, s.Draft.Sections...),
+	}
+	if err := b.store.CreateAdminLocation(loc); err != nil {
+		return b.Send(ctx, chatID, "Не удалось добавить локацию: "+html.EscapeString(err.Error()), markup([]Button{callbackButton("⬅️ К редактору", "adm:editor")}))
+	}
+	s.CreatingLocation = false
+	s.OriginalHash = catalog.RevisionHash(s.Draft)
+	entry := adminRevisionEvent{At: time.Now().UTC(), Actor: userID, LocationID: s.LocationID, After: s.Draft, Operation: "create"}
+	if err := b.recordAdminHistory(entry); err != nil {
+		log.Printf("New admin location history failure: %v", err)
+		return b.Send(ctx, chatID, "✅ Локация добавлена, но запись истории не сохранилась. Сделайте резервную копию.", markup([]Button{callbackButton("⬅️ Админ-панель", "adm:menu")}))
+	}
+	return b.Send(ctx, chatID, "✅ <b>Локация добавлена в каталог!</b>\n\n"+html.EscapeString(s.Draft.Title)+"\n\nОна доступна пользователям и сохранится после перезапуска бота.", markup(
+		[]Button{callbackButton("✏️ Редактировать", "adm:editor"), callbackButton("📍 К списку", "adm:locations:0")},
+		[]Button{callbackButton("⬅️ Админ-панель", "adm:menu")},
+	))
+}
+
 func (b *Bot) publishAdminDraft(ctx context.Context, chatID, userID int64, s *adminSession) error {
+	if s.CreatingLocation {
+		return b.publishNewAdminLocation(ctx, chatID, userID, s)
+	}
 	loc, ok := b.store.Find(s.LocationID)
 	if !ok {
 		return errors.New("missing location")
@@ -582,10 +680,13 @@ func (b *Bot) showAdminHistoryEntry(ctx context.Context, chatID int64, index int
 	}
 	item := records[index]
 	summary := fmt.Sprintf("🕘 <b>Редакция #%d</b> · <code>%s</code>\n%s UTC · Администратор: <code>%d</code>\nДействие: %s\n\n<b>Что изменилось</b>\n%s", index+1, html.EscapeString(item.LocationID), item.At.UTC().Format("02.01.2006 15:04"), item.Actor, html.EscapeString(item.Operation), briefDiff(item.Before, item.After))
-	return b.Send(ctx, chatID, summary, markup(
-		[]Button{callbackButton("↩️ Восстановить версию до правки", fmt.Sprintf("adm:histrestore:%d", index))},
-		[]Button{callbackButton("⬅️ К истории", fmt.Sprintf("adm:histpage:%d", b.adminSession(chatID).HistoryPage))},
-	))
+	rows := [][]Button{}
+	// A creation entry has no previous published card to roll back to.
+	if item.Operation != "create" {
+		rows = append(rows, []Button{callbackButton("↩️ Восстановить версию до правки", fmt.Sprintf("adm:histrestore:%d", index))})
+	}
+	rows = append(rows, []Button{callbackButton("⬅️ К истории", fmt.Sprintf("adm:histpage:%d", b.adminSession(chatID).HistoryPage))})
+	return b.Send(ctx, chatID, summary, markup(rows...))
 }
 func (b *Bot) confirmAdminHistoryRestore(ctx context.Context, chatID int64, index int) error {
 	records, err := b.adminHistory()
@@ -594,6 +695,9 @@ func (b *Bot) confirmAdminHistoryRestore(ctx context.Context, chatID int64, inde
 	}
 	if index < 0 || index >= len(records) {
 		return b.showAdminHistoryPage(ctx, chatID, 0)
+	}
+	if records[index].Operation == "create" {
+		return b.Send(ctx, chatID, "Создание новой локации нельзя отменить как обычное изменение раздела.", markup([]Button{callbackButton("⬅️ К истории", "adm:history")}))
 	}
 	loc, ok := b.store.Find(records[index].LocationID)
 	if !ok {
@@ -622,6 +726,9 @@ func (b *Bot) applyAdminHistoryRestore(ctx context.Context, chatID, userID int64
 		return b.showAdminHistoryPage(ctx, chatID, 0)
 	}
 	item := records[index]
+	if item.Operation == "create" {
+		return b.Send(ctx, chatID, "Нельзя восстановить пустую версию до создания карточки.", nil)
+	}
 	current, ok := b.store.Find(item.LocationID)
 	if !ok {
 		return errors.New("location missing")
@@ -648,6 +755,9 @@ func (b *Bot) undoLastAdminChange(ctx context.Context, chatID, userID int64) err
 		return b.showAdminHistory(ctx, chatID)
 	}
 	last := records[len(records)-1]
+	if last.Operation == "create" {
+		return b.Send(ctx, chatID, "Для созданной локации нет предыдущей редакции.", nil)
+	}
 	current, ok := b.store.Find(last.LocationID)
 	if !ok {
 		return errors.New("missing location")
@@ -1004,6 +1114,8 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 			page = 0
 		}
 		return b.showAdminLocations(ctx, chatID, page)
+	case data == "adm:new":
+		return b.startAdminNewLocation(ctx, chatID, from.ID)
 	case strings.HasPrefix(data, "adm:edit:"):
 		return b.startAdminEditor(ctx, chatID, from.ID, strings.TrimPrefix(data, "adm:edit:"))
 	case data == "adm:locsearch":
@@ -1029,7 +1141,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 			return nil
 		}
 		session.Field = field
-		return b.Send(ctx, chatID, "✏️ Отправьте новое значение поля <b>"+html.EscapeString(field)+"</b> обычным сообщением. Изменение останется черновиком до публикации.", markup([]Button{callbackButton("❌ Отмена", "adm:editor")}))
+		return b.showAdminFieldPrompt(ctx, chatID, session, field)
 	case strings.HasPrefix(data, "adm:section:"):
 		n, err := strconv.Atoi(strings.TrimPrefix(data, "adm:section:"))
 		if err != nil {
@@ -1051,7 +1163,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		}
 		session.Field = field
 		session.SectionIndex = n
-		return b.Send(ctx, chatID, "✏️ Напишите новое значение текстом. Нажмите «Опубликовать» в редакторе, когда будете готовы.", markup([]Button{callbackButton("❌ Отмена", "adm:sections")}))
+		return b.showAdminFieldPrompt(ctx, chatID, session, field)
 	case data == "adm:add":
 		if len(session.Draft.Sections) >= 15 {
 			return b.Send(ctx, chatID, "Достигнут предел 15 разделов.", nil)
@@ -1106,11 +1218,13 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID int64, from user, inpu
 		}
 		matches := catalog.Search(b.store.List(), input)
 		rows := [][]Button{}
-		for i, l := range matches {
-			if i >= 12 {
-				break
+		count := min(12, len(matches))
+		for i := 0; i < count; i += 2 {
+			row := []Button{callbackButton(buttonLabel(matches[i].Title), "adm:edit:"+matches[i].ID)}
+			if i+1 < count {
+				row = append(row, callbackButton(buttonLabel(matches[i+1].Title), "adm:edit:"+matches[i+1].ID))
 			}
-			rows = append(rows, []Button{callbackButton(buttonLabel(l.Title), "adm:edit:"+l.ID)})
+			rows = append(rows, row)
 		}
 		rows = append(rows, []Button{callbackButton("⬅️ К каталогу", "adm:locations:0")})
 		if len(matches) == 0 {
@@ -1118,6 +1232,19 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID int64, from user, inpu
 		}
 		session.Field = ""
 		return true, b.Send(ctx, chatID, "🔎 <b>Найденные локации</b>\n\nВыберите карточку:", markup(rows...))
+	}
+	if session.Field == "new_title" && session.CreatingLocation {
+		if strings.HasPrefix(input, "/") {
+			return false, nil
+		}
+		input = strings.TrimSpace(input)
+		draft := catalog.CardRevision{Title: input, Sections: []catalog.CardSection{}}
+		if err := draft.Validate(); err != nil {
+			return true, b.Send(ctx, chatID, "Некорректное название: "+html.EscapeString(err.Error())+"\nВведите название ещё раз.", markup([]Button{callbackButton("❌ Отмена", "adm:locations:0")}))
+		}
+		session.Draft = draft
+		session.Field = ""
+		return true, b.showAdminEditor(ctx, chatID, session)
 	}
 	if session.Field == "" || session.LocationID == "" {
 		return false, nil

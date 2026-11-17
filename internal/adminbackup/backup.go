@@ -24,8 +24,9 @@ const Schema = 1
 const manifestFile = "manifest.json"
 const effectiveFile = "catalog_effective.json"
 const cardsFile = "admin_cards.json"
+const adminLocationsFile = catalog.AdminLocationsFilename
 
-var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", cardsFile}
+var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", cardsFile, adminLocationsFile}
 
 type Manifest struct {
 	Schema    int               `json:"schema"`
@@ -192,6 +193,29 @@ func Examine(raw []byte) (Archive, error) {
 			return Archive{}, err
 		}
 	}
+	// Older archives have no separately stored custom locations. New archives
+	// must include the exact custom IDs represented in the effective catalog.
+	customLocations := map[string]catalog.Location{}
+	if raw, exists := files[adminLocationsFile]; exists {
+		if err := json.Unmarshal(raw, &customLocations); err != nil {
+			return Archive{}, fmt.Errorf("invalid custom locations: %w", err)
+		}
+		if err := catalog.ValidateAdminLocations(customLocations); err != nil {
+			return Archive{}, err
+		}
+	}
+	for _, loc := range locations {
+		if catalog.IsAdminLocationID(loc.ID) {
+			if _, exists := customLocations[loc.ID]; !exists {
+				return Archive{}, fmt.Errorf("missing custom location %s in the archive", loc.ID)
+			}
+		}
+	}
+	for id := range customLocations {
+		if !seen[id] {
+			return Archive{}, fmt.Errorf("custom location %s is not in the catalog", id)
+		}
+	}
 	if _, err := parseLeads(files["leads.json"]); err != nil {
 		return Archive{}, fmt.Errorf("invalid applications: %w", err)
 	}
@@ -277,22 +301,74 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 	if err = json.Unmarshal(archive.Contents[effectiveFile], &locations); err != nil {
 		return path, err
 	}
-	revisions := map[string]catalog.CardRevision{}
-	currentIDs := map[string]bool{}
-	for _, loc := range current {
-		currentIDs[loc.ID] = true
-	}
-	if len(currentIDs) != len(locations) {
-		return path, errors.New("архив содержит другое число локаций: восстановление запрещено")
-	}
+	archived := make(map[string]catalog.Location, len(locations))
 	for _, loc := range locations {
-		if !currentIDs[loc.ID] {
-			return path, fmt.Errorf("локация %s отсутствует в текущем каталоге", loc.ID)
+		archived[loc.ID] = loc
+	}
+	currentIDs := make(map[string]catalog.Location, len(current))
+	for _, loc := range current {
+		currentIDs[loc.ID] = loc
+	}
+	// Curated locations must be present on both sides. Administrator-created
+	// locations can be added from the archive, while custom locations created
+	// after an older archive are always preserved.
+	for id := range currentIDs {
+		if _, found := archived[id]; !found && !catalog.IsAdminLocationID(id) {
+			return path, fmt.Errorf("архив не содержит обязательную локацию %s", id)
 		}
+	}
+	for id := range archived {
+		if _, found := currentIDs[id]; !found && !catalog.IsAdminLocationID(id) {
+			return path, fmt.Errorf("локация %s отсутствует в текущем каталоге", id)
+		}
+	}
+	custom, err := catalog.ReadAdminLocations(filepath.Join(root, adminLocationsFile))
+	if err != nil {
+		return path, err
+	}
+	rawCustom := archive.Contents[adminLocationsFile]
+	if len(rawCustom) > 0 {
+		var uploaded map[string]catalog.Location
+		if err := json.Unmarshal(rawCustom, &uploaded); err != nil {
+			return path, err
+		}
+		if err := catalog.ValidateAdminLocations(uploaded); err != nil {
+			return path, err
+		}
+		for id, l := range uploaded {
+			custom[id] = l
+		}
+	}
+	if err := catalog.ValidateAdminLocations(custom); err != nil {
+		return path, err
+	}
+	for id := range archived {
+		if catalog.IsAdminLocationID(id) {
+			if _, found := custom[id]; !found {
+				return path, fmt.Errorf("в архиве отсутствует новая локация %s", id)
+			}
+		}
+	}
+	revisions := map[string]catalog.CardRevision{}
+	for _, loc := range locations {
 		revisions[loc.ID] = catalog.Revision(loc)
 	}
-	override, _ := json.MarshalIndent(revisions, "", "  ")
-	replacement := map[string][]byte{cardsFile: override}
+	for id, loc := range currentIDs {
+		if catalog.IsAdminLocationID(id) {
+			if _, inArchive := revisions[id]; !inArchive {
+				revisions[id] = catalog.Revision(loc)
+			}
+		}
+	}
+	override, err := json.MarshalIndent(revisions, "", "  ")
+	if err != nil {
+		return path, err
+	}
+	customRaw, err := json.MarshalIndent(custom, "", "  ")
+	if err != nil {
+		return path, err
+	}
+	replacement := map[string][]byte{cardsFile: override, adminLocationsFile: customRaw}
 	if mode == "full" {
 		for _, name := range []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json"} {
 			replacement[name] = copyBytes(archive.Contents[name])

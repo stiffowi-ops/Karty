@@ -257,7 +257,9 @@ func (s *Store) Reload() error {
 			}
 		}
 	}
-	if err := s.applyAdminCards(loc); err != nil { return err }
+	loc, err = s.appendAdminLocations(loc)
+ if err != nil { return err }
+ if err := s.applyAdminCards(loc); err != nil { return err }
  sort.Slice(loc, func(i, j int) bool { return loc[i].ID < loc[j].ID })
 	s.mu.Lock()
 	s.locations = loc

@@ -29,6 +29,10 @@ func richLocationHTML(raw catalog.Location, layerURL string) string {
   {"📈 Возможности для бизнеса",l.Opportunity},
   {"🎯 Почему именно здесь",l.Conclusion},
  }
+ if l.Sections != nil {
+  blocks=nil
+  for _,section:=range l.Sections {if section.Enabled {blocks=append(blocks,struct{title,content string}{section.Title,section.Body})}}
+ }
  var buf strings.Builder
  buf.WriteString("<h3>" + icon + " " + title + "</h3>")
  buf.WriteString("<p><i>" + html.EscapeString(limitCaptionUnits(status,200)) + "</i></p>")

@@ -21,6 +21,7 @@ import (
 	"unicode/utf16"
 
 	"locationbot/internal/catalog"
+ "locationbot/internal/analytics"
 	"locationbot/internal/syncer"
 )
 
@@ -38,6 +39,9 @@ type Bot struct {
 	lastScreens              map[int64]int
 	searchPrompts            map[int64]int
 	botID                    int64
+ metrics *analytics.Store
+ adminMu sync.Mutex
+ adminStates map[int64]*adminSession
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -60,6 +64,7 @@ type message struct {
 	From      user      `json:"from"`
 	ViaBot    *user     `json:"via_bot"`
 	Location  *geoPoint `json:"location"`
+ Document *telegramDocument `json:"document"`
 }
 type callbackQuery struct {
 	ID              string   `json:"id"`
@@ -73,7 +78,10 @@ type update struct {
 	Message  *message       `json:"message"`
 	Callback *callbackQuery `json:"callback_query"`
 	InlineQuery *inlineQuery `json:"inline_query"`
+ Chosen *chosenInlineResult `json:"chosen_inline_result"`
 }
+type telegramDocument struct { FileID string `json:"file_id"`; FileName string `json:"file_name"`; FileSize int64 `json:"file_size"` }
+type chosenInlineResult struct {ResultID string `json:"result_id"`;From user `json:"from"`}
 type apiResult struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description"`
@@ -119,9 +127,11 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 	if err != nil {
 		return nil, err
 	}
+ metrics, err := analytics.Open(filepath.Join(dataDir,"analytics.jsonl"))
+ if err != nil {return nil,err}
 	return &Bot{
 		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
-		adminIDs: ids, leads: leads, http: &http.Client{Timeout: 50 * time.Second},
+		adminIDs: ids, leads: leads, metrics:metrics, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
 		compareSelections: make(map[int64][]string),
 	}, nil
@@ -217,7 +227,7 @@ func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64
 }
 
 func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
-	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL))
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), b.adminHomeMarkup(b.mapURL,sender.ID))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -782,11 +792,22 @@ func (b *Bot) showNear(ctx context.Context, chatID int64, p *geoPoint) error {
 	return b.Send(ctx, chatID, "<b>Ближайшие локации</b> 📍\nРасстояния рассчитаны <b>по прямой</b>, а не по маршруту. Нажми на локацию, чтобы посмотреть описание и оценку.\n\nГеопозицию бот не сохраняет.", markup(rows...))
 }
 func (b *Bot) handle(ctx context.Context, u update) error {
+ if u.Chosen != nil {
+  if id:=strings.TrimPrefix(u.Chosen.ResultID,"karty:"); id!=u.Chosen.ResultID {
+   b.recordLocationAnalytics(u.Chosen.From.ID,id,analytics.View)
+  }
+  return nil
+ }
 	if u.InlineQuery != nil {
 		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
 	}
 	if u.Callback != nil {
-		if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
+  if strings.HasPrefix(u.Callback.Data,"adm:") {
+   b.answerCallback(ctx,u.Callback.ID)
+   if u.Callback.Message == nil || u.Callback.Message.Chat.Type != "private" || !b.isAdmin(u.Callback.From.ID) || u.Callback.Message.Chat.ID != u.Callback.From.ID {return nil}
+   return b.handleAdminCallback(withNavigation(ctx,u.Callback.Message.Chat.ID,u.Callback.Message.MessageID),u.Callback.From.ID,u.Callback.From,u.Callback.Data)
+  }
+  if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
 			return b.toggleInlineFavorite(ctx, u.Callback)
 		}
 		if strings.HasPrefix(u.Callback.Data, "inline:nav:") {
@@ -842,7 +863,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			if len(parts) > 1 {
 				page, _ = strconv.Atoi(parts[1])
 			}
-			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
+			err := b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
+   if err == nil {b.recordLocationAnalytics(u.Callback.From.ID,parts[0],analytics.View)}
+   return err
 		case strings.HasPrefix(u.Callback.Data, "page:"):
 			n, _ := strconv.Atoi(strings.TrimPrefix(u.Callback.Data, "page:"))
 			return b.showPage(ctx, chatID, n)
@@ -877,8 +900,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 				return err
 			}
 			if !added {
-				b.removeComparisonSelection(u.Callback.From.ID, parts[0])
-			}
+    b.removeComparisonSelection(u.Callback.From.ID, parts[0])
+   }
+   kind:=analytics.FavoriteRemoved
+   if added {kind=analytics.FavoriteAdded}
+   b.recordLocationAnalytics(u.Callback.From.ID,parts[0],kind)
 			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
 		case strings.HasPrefix(u.Callback.Data, "fav:remove:"):
 			stationID := strings.TrimPrefix(u.Callback.Data, "fav:remove:")
@@ -886,6 +912,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 				return err
 			}
 			b.removeComparisonSelection(u.Callback.From.ID, stationID)
+   b.recordLocationAnalytics(u.Callback.From.ID,stationID,analytics.FavoriteRemoved)
 			return b.showFavorites(ctx, chatID, u.Callback.From.ID)
 		}
 		return nil
@@ -894,7 +921,13 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if m == nil || m.Chat.Type != "private" {
 		return nil
 	}
-	// An inline result is sent by the user via our bot. Its text already IS
+ if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
+  if err:=b.receiveAdminBackup(ctx,m.Chat.ID,m.From.ID,m.Document.FileID,m.Document.FileSize);err!=nil {
+   return b.Send(ctx,m.Chat.ID,"Не удалось загрузить архив. Проверьте формат и повторите попытку.",nil)
+  }
+  return nil
+ }
+ // An inline result is sent by the user via our bot. Its text already IS
 	// the location card; do not treat it as a new name-search query.
 	if m.ViaBot != nil {
 		// Only clean up the prompt when this message was sent via this
@@ -950,7 +983,10 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.showMap(ctx, chatID)
 	case "/id":
 		return b.Send(ctx, chatID, fmt.Sprintf("Твой Telegram ID: <code>%d</code>", m.From.ID), nil)
-	case "/applications":
+	case "/admin":
+   if !b.isAdmin(m.From.ID) {return b.Send(ctx,chatID,"Нет доступа к админ-панели.",nil)}
+   return b.showAdminMenu(ctx,chatID)
+ case "/applications":
 		if !b.adminIDs[m.From.ID] {
 			return b.Send(ctx, chatID, "Доступно только администратору.", nil)
 		}
@@ -1001,7 +1037,8 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if strings.HasPrefix(cmd, "/") {
 		return b.Send(ctx, chatID, "Неизвестная команда. /help", nil)
 	}
-	if handled, err := b.handleLeadText(ctx, chatID, m.From, input); handled {
+	if handled,err:=b.handleAdminText(ctx,chatID,m.From,input);handled{return err}
+ if handled, err := b.handleLeadText(ctx, chatID, m.From, input); handled {
 		return err
 	}
 	if mapInput, ok := sharedMapInput(input); ok {
@@ -1019,7 +1056,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.Send(ctx, chatID, "По запросу <b>"+html.EscapeString(input)+"</b> ничего не найдено. Попробуй часть названия.", nil)
 	}
 	if len(found) == 1 {
-		return b.showLocation(ctx, chatID, m.From.ID, found[0].ID, 0)
+		err:=b.showLocation(ctx, chatID, m.From.ID, found[0].ID, 0)
+  if err==nil{b.recordLocationAnalytics(m.From.ID,found[0].ID,analytics.View)}
+  return err
 	}
 	found = sortedStations(found)
 	rows := [][]Button{}
@@ -1070,7 +1109,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	log.Println("Telegram long polling started (no Mini App, no open ports)")
 	for ctx.Err() == nil {
-		raw, err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "limit": 30, "allowed_updates": []string{"message", "callback_query", "inline_query"}})
+		raw, err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "limit": 30, "allowed_updates": []string{"message", "callback_query", "inline_query", "chosen_inline_result"}})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil

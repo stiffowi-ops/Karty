@@ -52,6 +52,7 @@ type message struct {
 	Text      string    `json:"text"`
 	Chat      chat      `json:"chat"`
 	From      user      `json:"from"`
+	ViaBot    *user     `json:"via_bot"`
 	Location  *geoPoint `json:"location"`
 }
 type callbackQuery struct {
@@ -143,6 +144,9 @@ func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any)
 		keyboard = homeMarkup()
 	}
 	payload["reply_markup"] = keyboard
+	if messageID, ok := navigationFromContext(ctx, chatID); ok {
+		return b.editTextOrSend(ctx, chatID, messageID, text, keyboard)
+	}
 	_, err := b.call(ctx, "sendMessage", payload)
 	return err
 }
@@ -163,6 +167,9 @@ func welcomeText(sender user) string {
 // a separate message to remove it; the transient reset message is deleted
 // after the inline menu has been delivered.
 func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64, text string, inline any) error {
+	if _, ok := navigationFromContext(ctx, chatID); ok {
+		return b.Send(ctx, chatID, text, inline)
+	}
 	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
 		"chat_id":              chatID,
 		"text":                 "·",
@@ -198,7 +205,7 @@ func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
 const stationPageSize = 10
 
 func stationLabel(title string) string {
-	title = strings.TrimSpace(title)
+	title = publicText(title)
 	if strings.HasPrefix(strings.ToLower(title), "метро ") {
 		return strings.TrimSpace(string([]rune(title)[len([]rune("Метро ")):]))
 	}
@@ -378,6 +385,7 @@ func cardField(s string) string {
 }
 
 func cardForLocation(l catalog.Location, layerURL string) string {
+	l = publicLocation(l)
 	title := limitCaptionUnits(l.Title, 150)
 	lineStatus := strings.TrimSpace(l.LineStatus)
 	if lineStatus == "" {
@@ -554,10 +562,10 @@ func (b *Bot) editTextOrSend(ctx context.Context, chatID int64, messageID int, t
 			"parse_mode": "HTML", "link_preview_options": map[string]any{"is_disabled": true},
 			"reply_markup": keyboard,
 		})
-		if err == nil {
+		if err == nil || strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
 			return nil
 		}
-		log.Printf("Refresh comparison picker message %d: %v; sending a new message", messageID, err)
+		log.Printf("Refresh navigation message %d: %v; sending a new message", messageID, err)
 	}
 	return b.Send(ctx, chatID, text, keyboard)
 }
@@ -599,10 +607,11 @@ func compareField(label, value string) string {
 	if strings.TrimSpace(value) == "" {
 		value = "Информация пока не добавлена."
 	}
-	return label + html.EscapeString(limitCaptionUnits(strings.TrimSpace(value), 120))
+	return label + html.EscapeString(limitCaptionUnits(publicText(value), 120))
 }
 
 func comparisonText(items []catalog.Location) string {
+	for i := range items { items[i] = publicLocation(items[i]) }
 	var lines []string
 	lines = append(lines, "⚖️ <b>Сравнение локаций</b>")
 	for i, item := range items {
@@ -737,6 +746,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if u.Callback.Message.Chat.Type != "private" {
 			return nil
 		}
+		ctx = withNavigation(ctx, chatID, u.Callback.Message.MessageID)
 		switch {
 		case u.Callback.Data == "menu":
 			return b.welcome(ctx, chatID, u.Callback.From)
@@ -805,6 +815,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	}
 	m := u.Message
 	if m == nil || m.Chat.Type != "private" {
+		return nil
+	}
+	// An inline result is sent by the user via our bot. Its text already IS
+	// the location card; do not treat it as a new name-search query.
+	if m.ViaBot != nil {
 		return nil
 	}
 	if m.Location != nil {

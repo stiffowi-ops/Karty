@@ -82,7 +82,8 @@ func (b *Bot) answerLocationInlineQuery(ctx context.Context, query *inlineQuery)
 	if query == nil || query.ID == "" { return nil }
 	results := make([]map[string]any, 0, inlineLocationLimit)
 	if b.store != nil {
-		for _, loc := range inlineLocationMatches(b.store.List(), query.Query, inlineLocationLimit) {
+		for _, raw := range inlineLocationMatches(b.store.List(), query.Query, inlineLocationLimit) {
+			loc := publicLocation(raw)
 			if !catalog.ValidID(loc.ID) || len("fav:inline:"+loc.ID) > 64 { continue }
 			rows := make([][]Button, 0, 3)
 			if link := stationMapLink(loc, b.mapURL); link != "" {

@@ -43,27 +43,18 @@ func TestNearestSortedAndWithoutCoordinates(t *testing.T) {
 		t.Fatal("station without coordinates returned")
 	}
 }
-func TestRequestLocationButton(t *testing.T) {
-	raw, err := json.Marshal(mainKeyboard())
-	if err != nil {
-		t.Fatal(err)
+func TestNearButtonIsInlineNotNative(t *testing.T) {
+	menu := startMenuMarkup(defaultProjectMapURL)
+	rows := menu["inline_keyboard"].([][]Button)
+	if len(rows) != 3 || len(rows[2]) != 1 {
+		t.Fatalf("expected 2x2 menu with inline Nearby below: %+v", rows)
 	}
-	var payload struct {
-		Keyboard [][]struct {
-			Text            string `json:"text"`
-			RequestLocation bool   `json:"request_location"`
-		} `json:"keyboard"`
-		IsPersistent bool `json:"is_persistent"`
-		OneTime bool `json:"one_time_keyboard"`
+	if rows[2][0]["text"] != "📍 Рядом со мной" || rows[2][0]["callback_data"] != "near" {
+		t.Fatalf("Nearby button is not inline: %+v", rows[2][0])
 	}
-	if err = json.Unmarshal(raw, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload.Keyboard) != 1 || len(payload.Keyboard[0]) != 1 || !payload.Keyboard[0][0].RequestLocation || payload.Keyboard[0][0].Text != "📍 Рядом со мной" {
-		t.Fatalf("expected native request_location main button: %+v", payload)
-	}
-	if !payload.IsPersistent || payload.OneTime {
-		t.Fatalf("location keyboard should stay visible: %+v", payload)
+	raw, _ := json.Marshal(menu)
+	if strings.Contains(string(raw), "request_location") || strings.Contains(string(raw), "keyboard") && !strings.Contains(string(raw), "inline_keyboard") {
+		t.Fatalf("native reply keyboard must not be used: %s", raw)
 	}
 }
 func TestHaversine(t *testing.T) {
@@ -325,7 +316,7 @@ func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
 	}
 }
 
-func TestStartCommandSendsInlineMainMenuAndNativeLocationKeyboard(t *testing.T) {
+func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
 	msg := &message{
@@ -333,55 +324,43 @@ func TestStartCommandSendsInlineMainMenuAndNativeLocationKeyboard(t *testing.T) 
 		Chat: chat{ID: 123, Type: "private"},
 		From: user{ID: 456, FirstName: "Иван", LastName: "Иванов"},
 	}
-	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
-		t.Fatal(err)
-	}
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
 	if len(tr.payloads) != 2 {
-		t.Fatalf("expected inline welcome + native location keyboard, got %d messages", len(tr.payloads))
+		t.Fatalf("expected temporary keyboard removal and inline menu, got %d messages", len(tr.payloads))
 	}
-	welcome := tr.payloads[0]
+	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
+	if reset["remove_keyboard"] != true {
+		t.Fatalf("old keyboard was not removed: %+v", reset)
+	}
+	welcome := tr.payloads[1]
 	welcomeText, _ := welcome["text"].(string)
 	if !strings.Contains(welcomeText, "Привет, Иван Иванов!") {
-		t.Fatalf("personalized welcome missing: %+v", welcome["text"])
+		t.Fatalf("personalized welcome missing: %+v", welcome)
 	}
 	markup, _ := welcome["reply_markup"].(map[string]any)
 	if markup["keyboard"] != nil || markup["remove_keyboard"] != nil {
-		t.Fatalf("welcome should use inline-only buttons: %+v", markup)
+		t.Fatalf("welcome must contain inline buttons only: %+v", markup)
 	}
 	rows, ok := markup["inline_keyboard"].([]any)
-	if !ok || len(rows) != 2 {
-		t.Fatalf("expected 2 rows in 2x2 inline menu: %+v", markup)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("expected three rows (2x2 + Nearby) in inline menu: %+v", markup)
 	}
 	assertButton := func(row, column int, label, dataType, data string) {
 		t.Helper()
 		buttons, ok := rows[row].([]any)
-		if !ok || column >= len(buttons) {
-			t.Fatalf("missing button at row %d, column %d", row, column)
-		}
+		if !ok || column >= len(buttons) { t.Fatalf("missing button at %d/%d", row, column) }
 		button, ok := buttons[column].(map[string]any)
 		if !ok || button["text"] != label || button[dataType] != data {
-			t.Fatalf("wrong menu button: %+v", button)
+			t.Fatalf("wrong button at %d/%d: %+v", row, column, button)
 		}
 	}
 	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
 	assertButton(1, 1, "🔎 Поиск локации", "switch_inline_query_current_chat", "")
-	geoMsg := tr.payloads[1]
-	locationKb, ok := geoMsg["reply_markup"].(map[string]any)
-	if !ok || locationKb["is_persistent"] != true || locationKb["one_time_keyboard"] != false {
-		t.Fatalf("expected persistent native reply keyboard: %+v", geoMsg)
-	}
-	native, _ := locationKb["keyboard"].([]any)
-	if len(native) != 1 { t.Fatalf("native keyboard missing: %+v", locationKb) }
-	row, _ := native[0].([]any)
-	if len(row) != 1 { t.Fatalf("native location button missing: %+v", locationKb) }
-	button, _ := row[0].(map[string]any)
-	if button["text"] != "📍 Рядом со мной" || button["request_location"] != true {
-		t.Fatalf("location button is not requesting location: %+v", button)
-	}
-	if len(tr.requests) != 2 || tr.requests[0] != "/botTEST/sendMessage" || tr.requests[1] != "/botTEST/sendMessage" {
-		t.Fatalf("unexpected extra message / keyboard reset: %+v", tr.requests)
+	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
+	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
+		t.Fatalf("temporary reset message not deleted: %+v", tr.requests)
 	}
 }
 
@@ -423,37 +402,43 @@ func TestNewAndLegacyMenuTextAliases(t *testing.T) {
 	}
 }
 
-func TestLocationRequestKeepsNativeKeyboardVisible(t *testing.T) {
-	keyboard, _ := json.Marshal(mainKeyboard())
-	for _, text := range []string{"request_location", "📍 Рядом со мной", "is_persistent", "one_time_keyboard"} {
-		if !strings.Contains(string(keyboard), text) {
-			t.Fatalf("location request lost %q: %s", text, keyboard)
-		}
-	}
+func TestManualGeopositionStillShowsNearestLocations(t *testing.T) {
 	tr := &captureTransport{}
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed.json")
-	if err := os.WriteFile(seed, []byte("[]"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	if err := os.WriteFile(seed, []byte("[]"), 0600); err != nil { t.Fatal(err) }
 	store, err := catalog.New(dir, seed, filepath.Join(dir, "overrides.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
 	b := &Bot{token: "TEST", store: store, http: &http.Client{Transport: tr}}
 	msg := &message{Chat: chat{ID: 123, Type: "private"}, From: user{ID: 456}, Location: &geoPoint{Latitude: 55.75, Longitude: 37.61}}
-	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
-		t.Fatal(err)
-	}
-	if len(tr.payloads) != 1 {
-		t.Fatalf("expected a single nearest-locations message, got %d", len(tr.payloads))
-	}
+	if err := b.handle(context.Background(), update{Message: msg}); err != nil { t.Fatal(err) }
+	if len(tr.payloads) != 1 { t.Fatalf("expected one nearby result, got %d messages",len(tr.payloads)) }
 	markup, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if markup["remove_keyboard"] == true {
-		t.Fatalf("location response must preserve native keyboard, got %+v", markup)
+	if markup["keyboard"] != nil || markup["remove_keyboard"] != nil {
+		t.Fatalf("nearest-locations response must only contain inline navigation: %+v", markup)
 	}
 	if _, ok := markup["inline_keyboard"]; !ok {
-		t.Fatalf("nearest-locations response lost navigation: %+v", markup)
+		t.Fatalf("nearest-locations response lost inline navigation: %+v", markup)
+	}
+}
+
+func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
+	tr := &captureTransport{}
+	b := &Bot{token: "TEST", http: &http.Client{Transport: tr}}
+	if err := b.requestLocation(context.Background(), 123); err != nil { t.Fatal(err) }
+	if len(tr.payloads) != 2 { t.Fatalf("expected reset and instruction, got %d",len(tr.payloads)) }
+	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
+	if reset["remove_keyboard"] != true { t.Fatalf("legacy keyboard not removed: %+v",reset) }
+	message, _ := tr.payloads[1]["text"].(string)
+	if !strings.Contains(message,"Скрепка") || !strings.Contains(message,"Геопозиция") {
+		t.Fatalf("instructions missing: %q",message)
+	}
+	kb,_ := tr.payloads[1]["reply_markup"].(map[string]any)
+	if _,ok:=kb["inline_keyboard"];!ok || kb["keyboard"]!=nil{
+		t.Fatalf("manual location prompt has wrong keyboard: %+v",kb)
+	}
+	if len(tr.requests)!=3 || tr.requests[2]!="/botTEST/deleteMessage" {
+		t.Fatalf("reset must be cleaned up: %+v",tr.requests)
 	}
 }
 

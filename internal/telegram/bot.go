@@ -79,27 +79,14 @@ func markup(rows ...[]Button) map[string]any   { return map[string]any{"inline_k
 func menuButton() Button                       { return callbackButton("🏠 Главное меню", "menu") }
 func homeMarkup() any                          { return markup([]Button{menuButton()}) }
 
-// The four primary actions stay inline to preserve direct links and live
-// inline search. Location sharing is exposed separately as a native
-// persistent reply-keyboard button below the chat input.
+// Keep every navigation action inline. Requesting a location from an inline
+// button is not supported by Telegram: users send their location via Attach.
 func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
 		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
 		[]Button{callbackButton("⭐ Избранное", "favorites"), inlineSearchButton()},
+		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
-}
-
-// Telegram only supports request_location on a reply keyboard in private chats.
-// Keep it persistent, rather than hiding it after a tap.
-func mainKeyboard() any {
-	return map[string]any{
-		"keyboard": []any{
-			[]any{map[string]any{"text": "📍 Рядом со мной", "request_location": true}},
-		},
-		"resize_keyboard": true,
-		"one_time_keyboard": false,
-		"is_persistent": true,
-	}
 }
 
 const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
@@ -172,14 +159,39 @@ func welcomeText(sender user) string {
 	return greeting + "\n\n🚀 <b>Не просто точки на карте. Точки роста твоего бизнеса!</b>\n\nМы собрали список локаций с интересными возможностями для открытия и развития бизнеса.\n\nИзучай расположение, потенциальную аудиторию и преимущества каждой точки. Сравнивай варианты и сохраняй лучшие в избранное ⭐\n\n<b>Найди свою следующую точку роста 👇</b>"
 }
 
-// Telegram cannot attach an inline menu and a reply keyboard to the same
-// message. Send the 2x2 inline menu, then a separate short message that installs
-// the persistent native location button below the text input.
-func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
-	if err := b.Send(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL)); err != nil {
+// Clear any native reply keyboard left by older versions. Telegram requires
+// a separate message to remove it; the transient reset message is deleted
+// after the inline menu has been delivered.
+func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64, text string, inline any) error {
+	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
+		"chat_id":              chatID,
+		"text":                 "·",
+		"disable_notification": true,
+		"reply_markup":         map[string]any{"remove_keyboard": true},
+	})
+	if resetErr != nil {
+		log.Printf("Remove legacy reply keyboard: %v", resetErr)
+	}
+	if err := b.Send(ctx, chatID, text, inline); err != nil {
 		return err
 	}
-	return b.Send(ctx, chatID, "📍 Для поиска ближайших локаций нажми <b>«Рядом со мной»</b> под строкой ввода. Telegram запросит разрешение на передачу геопозиции.", mainKeyboard())
+	if resetErr == nil {
+		var resetMessage struct {
+			MessageID int `json:"message_id"`
+		}
+		if err := json.Unmarshal(resetRaw, &resetMessage); err == nil && resetMessage.MessageID > 0 {
+			if _, err := b.call(ctx, "deleteMessage", map[string]any{
+				"chat_id": chatID, "message_id": resetMessage.MessageID,
+			}); err != nil {
+				log.Printf("Delete reply keyboard reset message: %v", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -908,7 +920,9 @@ func (b *Bot) showMap(ctx context.Context, chatID int64) error {
 	return b.Send(ctx, chatID, "<b>Карта локаций</b> 🗺", markup([]Button{urlButton("Открыть карту", b.mapURL)}, []Button{callbackButton("⬅️ К списку", "page:0"), menuButton()}))
 }
 func (b *Bot) requestLocation(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "📍 Нажми <b>«Рядом со мной»</b> под строкой ввода. Telegram запросит разрешение на геопозицию и отправит её боту. Также можно поделиться точкой вручную через вложения. Геопозиция не сохраняется.", mainKeyboard())
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, "📍 <b>Рядом со мной</b>\n\nЧтобы найти ближайшие локации, нажми <b>📎 Скрепка → Геопозиция → Отправить текущую геопозицию</b>.\n\nTelegram не позволяет запросить геопозицию напрямую из inline-кнопки. Бот покажет ближайшие точки, когда получит местоположение. Геопозиция не сохраняется в базе.", markup(
+		[]Button{callbackButton("⬅️ К списку локаций", "page:0"), menuButton()},
+	))
 }
 func (b *Bot) Run(ctx context.Context) error {
 	if _, err := b.call(ctx, "getMe", map[string]any{}); err != nil {

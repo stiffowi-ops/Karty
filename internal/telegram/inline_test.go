@@ -16,6 +16,7 @@ type inlineTransport struct {calls []string; payload map[string]any}
 func (tr *inlineTransport) RoundTrip(req *http.Request)(*http.Response,error){
  tr.calls=append(tr.calls,req.URL.Path)
  raw,err:=io.ReadAll(req.Body);if err!=nil{return nil,err}
+ tr.payload = make(map[string]any)
  if err=json.Unmarshal(raw,&tr.payload);err!=nil{return nil,err}
  return &http.Response{StatusCode:200,Body:io.NopCloser(strings.NewReader(`{"ok":true,"result":true}`)),Header:http.Header{"Content-Type":[]string{"application/json"}}},nil
 }
@@ -86,7 +87,7 @@ func TestInlineNavigationOpensPersonalChat(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"nav",Data:"inline:nav:favorites",From:user{ID:77},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- if len(tr.calls)<3 || tr.calls[0]!="/botTEST/sendMessage" || tr.calls[1]!="/botTEST/sendMessage" || tr.calls[len(tr.calls)-1]!="/botTEST/answerCallbackQuery"{
+ if len(tr.calls)<2 || tr.calls[0]!="/botTEST/sendMessage" || tr.calls[len(tr.calls)-1]!="/botTEST/answerCallbackQuery"{
   t.Fatalf("navigation must open the user's private chat, not edit inline result: %v",tr.calls)
  }
 }

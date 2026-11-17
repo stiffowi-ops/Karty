@@ -37,11 +37,16 @@ type leadApplication struct {
 	Source       string          `json:"source"`
 	CreatedAt    time.Time       `json:"created_at"`
 	Delivered    map[string]bool `json:"delivered,omitempty"`
+	AdminMessages map[string]int `json:"admin_messages,omitempty"`
+	TakenInWork bool `json:"taken_in_work,omitempty"`
+	TakenBy int64 `json:"taken_by,omitempty"`
+	TakenAt *time.Time `json:"taken_at,omitempty"`
 }
 
 type leadState struct {
 	Drafts    map[string]leadDraft       `json:"drafts"`
 	Submitted map[string]leadApplication `json:"submitted"`
+	History []leadApplication `json:"history,omitempty"`
 	NextID    int64                      `json:"next_id"`
 }
 
@@ -69,6 +74,7 @@ func openLeadStore(path string) (*leadStore, error) {
 	if s.state.Submitted == nil {
 		s.state.Submitted = map[string]leadApplication{}
 	}
+	if s.state.History == nil {s.state.History = []leadApplication{}}
 	return s, nil
 }
 
@@ -92,19 +98,33 @@ func (s *leadStore) submitted(userID int64) (leadApplication, bool) {
 	return l, ok
 }
 
-func (s *leadStore) cloneLocked() leadState {
-	next := leadState{Drafts: make(map[string]leadDraft, len(s.state.Drafts)), Submitted: make(map[string]leadApplication, len(s.state.Submitted)), NextID: s.state.NextID}
-	for key, draft := range s.state.Drafts {
-		next.Drafts[key] = draft
-	}
-	for key, lead := range s.state.Submitted {
-		copyLead := lead
+func cloneLead(lead leadApplication) leadApplication {
+	copyLead := lead
+	if lead.Delivered != nil {
 		copyLead.Delivered = make(map[string]bool, len(lead.Delivered))
-		for admin, delivered := range lead.Delivered {
-			copyLead.Delivered[admin] = delivered
-		}
-		next.Submitted[key] = copyLead
+		for id, sent := range lead.Delivered {copyLead.Delivered[id]=sent}
 	}
+	if lead.AdminMessages != nil {
+		copyLead.AdminMessages = make(map[string]int, len(lead.AdminMessages))
+		for id, messageID := range lead.AdminMessages {copyLead.AdminMessages[id]=messageID}
+	}
+	if lead.TakenAt != nil {
+		taken := *lead.TakenAt
+		copyLead.TakenAt = &taken
+	}
+	return copyLead
+}
+
+func (s *leadStore) cloneLocked() leadState {
+	next := leadState{
+		Drafts: make(map[string]leadDraft, len(s.state.Drafts)),
+		Submitted: make(map[string]leadApplication, len(s.state.Submitted)),
+		History: make([]leadApplication, 0, len(s.state.History)),
+		NextID: s.state.NextID,
+	}
+	for key, draft := range s.state.Drafts {next.Drafts[key]=draft}
+	for key, lead := range s.state.Submitted {next.Submitted[key]=cloneLead(lead)}
+	for _, lead := range s.state.History {next.History=append(next.History,cloneLead(lead))}
 	return next
 }
 
@@ -147,7 +167,7 @@ func (s *leadStore) putDraft(userID int64, d leadDraft) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := strconv.FormatInt(userID, 10)
-	if _, sent := s.state.Submitted[key]; sent {
+	if previous, sent := s.state.Submitted[key]; sent && !previous.TakenInWork {
 		return errors.New("lead already submitted")
 	}
 	next := s.cloneLocked()
@@ -175,14 +195,20 @@ func (s *leadStore) submit(userID int64, username, locationName string) (leadApp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := strconv.FormatInt(userID, 10)
-	if previous, exists := s.state.Submitted[key]; exists {
-		return previous, true, nil
+	if previous, exists := s.state.Submitted[key]; exists && !previous.TakenInWork {
+		return cloneLead(previous), true, nil
 	}
 	d, ok := s.state.Drafts[key]
 	if !ok || d.Kind == "" || d.Name == "" || d.Phone == "" || d.LocationID == "" || (d.Kind == "new" && d.Company == "") {
 		return leadApplication{}, false, errors.New("incomplete application")
 	}
 	next := s.cloneLocked()
+	if previous, exists := next.Submitted[key]; exists {
+		// Keep the previous processed application in the permanent history
+		// instead of overwriting the only record for this Telegram user.
+		if !previous.TakenInWork { return cloneLead(previous), true, nil }
+		next.History = append(next.History, cloneLead(previous))
+	}
 	next.NextID++
 	lead := leadApplication{
 		Number: next.NextID, UserID: userID, Username: username,
@@ -198,33 +224,84 @@ func (s *leadStore) submit(userID int64, username, locationName string) (leadApp
 	return lead, false, nil
 }
 
-func (s *leadStore) markDelivered(userID, adminID int64) error {
+// markDelivered stores the Telegram message ID with the application number.
+// The number matters: one user can now submit multiple processed applications.
+func (s *leadStore) markDelivered(userID, number, adminID int64, messageID int) error {
+	if s == nil || userID <= 0 || number <= 0 || adminID <= 0 {return errors.New("invalid application delivery")}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.cloneLocked()
-	key := strconv.FormatInt(userID, 10)
-	lead, ok := next.Submitted[key]
-	if !ok {
-		return errors.New("lead missing")
+	modify := func(lead leadApplication) leadApplication {
+		if lead.Delivered == nil {lead.Delivered = map[string]bool{}}
+		key := strconv.FormatInt(adminID, 10)
+		lead.Delivered[key] = true
+		if messageID > 0 {
+			if lead.AdminMessages == nil {lead.AdminMessages = map[string]int{}}
+			lead.AdminMessages[key] = messageID
+		}
+		return lead
 	}
-	if lead.Delivered == nil {
-		lead.Delivered = map[string]bool{}
+	key := strconv.FormatInt(userID,10)
+	if lead, ok := next.Submitted[key]; ok && lead.Number == number {
+		next.Submitted[key] = modify(lead)
+		return s.saveLocked(next)
 	}
-	lead.Delivered[strconv.FormatInt(adminID, 10)] = true
-	next.Submitted[key] = lead
-	return s.saveLocked(next)
+	for i := range next.History {
+		if next.History[i].Number == number && next.History[i].UserID == userID {
+			next.History[i] = modify(next.History[i])
+			return s.saveLocked(next)
+		}
+	}
+	return errors.New("application not found for delivery receipt")
+}
+
+func (s *leadStore) byNumber(number int64) (leadApplication, bool) {
+	if s == nil || number <= 0 {return leadApplication{}, false}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, lead := range s.state.Submitted {
+		if lead.Number == number {return cloneLead(lead), true}
+	}
+	for _, lead := range s.state.History {
+		if lead.Number == number {return cloneLead(lead), true}
+	}
+	return leadApplication{}, false
+}
+
+// takeInWork is an atomic, idempotent transition. A new submission becomes
+// possible only after the first administrator has committed this transition.
+func (s *leadStore) takeInWork(number, adminID int64) (leadApplication, bool, error) {
+	if s == nil || number <= 0 || adminID <= 0 {return leadApplication{}, false, errors.New("invalid application or administrator")}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.cloneLocked()
+	now := time.Now().UTC()
+	for key, lead := range next.Submitted {
+		if lead.Number != number {continue}
+		if lead.TakenInWork {return cloneLead(lead), false, nil}
+		lead.TakenInWork, lead.TakenBy, lead.TakenAt = true, adminID, &now
+		next.Submitted[key] = lead
+		if err := s.saveLocked(next); err != nil {return leadApplication{},false,err}
+		return cloneLead(lead),true,nil
+	}
+	for i, lead := range next.History {
+		if lead.Number != number {continue}
+		if lead.TakenInWork {return cloneLead(lead), false, nil}
+		lead.TakenInWork, lead.TakenBy, lead.TakenAt = true, adminID, &now
+		next.History[i] = lead
+		if err := s.saveLocked(next); err != nil {return leadApplication{},false,err}
+		return cloneLead(lead),true,nil
+	}
+	return leadApplication{}, false, errors.New("application number not found")
 }
 
 func (s *leadStore) allSubmitted() []leadApplication {
-	if s == nil {
-		return nil
-	}
+	if s == nil {return nil}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]leadApplication, 0, len(s.state.Submitted))
-	for _, lead := range s.state.Submitted {
-		out = append(out, lead)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Number > out[j].Number })
+	out := make([]leadApplication,0,len(s.state.Submitted)+len(s.state.History))
+	for _, lead := range s.state.Submitted {out=append(out,cloneLead(lead))}
+	for _, lead := range s.state.History {out=append(out,cloneLead(lead))}
+	sort.Slice(out,func(i,j int)bool{return out[i].Number>out[j].Number})
 	return out
 }

@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -44,7 +45,7 @@ func (b *Bot) openLead(ctx context.Context, chatID, userID int64, source, sugges
 	if b.leads == nil || b.store == nil || b.favorites == nil || len(b.adminIDs) == 0 {
 		return b.Send(ctx, chatID, "Приём заявок временно недоступен. Пожалуйста, попробуйте позже.", markup([]Button{menuButton()}))
 	}
-	if previous, exists := b.leads.submitted(userID); exists {
+	if previous, exists := b.leads.submitted(userID); exists && !previous.TakenInWork {
 		return b.leadAlreadySent(ctx, chatID, previous)
 	}
 	if source == "favorites" && len(b.favoriteLocations(userID)) == 0 {
@@ -81,7 +82,7 @@ func (b *Bot) startLead(ctx context.Context, chatID, userID int64, source, sugge
 
 func (b *Bot) leadAlreadySent(ctx context.Context, chatID int64, previous leadApplication) error {
 	return b.Send(ctx, chatID,
-		fmt.Sprintf("📩 <b>Ваша заявка №%04d уже принята!</b>\n\nМы получили Ваше обращение ранее. Повторно отправлять заявку не нужно.\n\nНаш специалист свяжется с Вами по указанным контактам, чтобы обсудить интересующую локацию.", previous.Number),
+		fmt.Sprintf("📩 <b>Ваша заявка №%04d уже принята!</b>\n\nЗаявка ожидает обработки специалистом. Новую заявку можно отправить после того, как администратор возьмёт текущую в работу.", previous.Number),
 		markup([]Button{menuButton()}))
 }
 
@@ -225,7 +226,7 @@ func (b *Bot) handleLeadCallback(ctx context.Context, chatID int64, from user, d
 	if b.leads == nil || b.store == nil {
 		return b.Send(ctx, chatID, "Сейчас форма недоступна.", nil)
 	}
-	if prev, ok := b.leads.submitted(from.ID); ok {
+	if prev, ok := b.leads.submitted(from.ID); ok && !prev.TakenInWork {
 		return b.leadAlreadySent(ctx, chatID, prev)
 	}
 	if strings.HasPrefix(data, "lead:restart:") {
@@ -480,58 +481,108 @@ func adminLeadText(lead leadApplication) string {
 	return b.String()
 }
 
+// The green "taken in work" button is available in recent Telegram clients.
+// Its callback is intentionally inert after a successful transition.
+func adminLeadMarkup(lead leadApplication) map[string]any {
+	if lead.TakenInWork {
+		return markup([]Button{{"text":"✅ Взято в работу","callback_data":fmt.Sprintf("lead:done:%d",lead.Number),"style":"success"}})
+	}
+	return markup([]Button{callbackButton("📥 Взять в работу",fmt.Sprintf("lead:take:%d",lead.Number))})
+}
+
 func (b *Bot) notifyLeadAdmins(ctx context.Context, lead leadApplication) {
-	if b.leads == nil {
-		return
-	}
-	ids := make([]int64, 0, len(b.adminIDs))
-	for id := range b.adminIDs {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if b.leads == nil {return}
+	ids := make([]int64,0,len(b.adminIDs))
+	for id := range b.adminIDs {ids=append(ids,id)}
+	sort.Slice(ids,func(i,j int)bool{return ids[i]<ids[j]})
 	for _, id := range ids {
-		if lead.Delivered[strconv.FormatInt(id, 10)] {
-			continue
-		}
-		_, err := b.call(ctx, "sendMessage", map[string]any{
-			"chat_id": id, "text": adminLeadText(lead), "parse_mode": "HTML", "link_preview_options": map[string]any{"is_disabled": true},
+		// Read fresh state on each attempt: the lead might already be taken
+		// into work while another admin notification is being sent.
+		actual, exists := b.leads.byNumber(lead.Number)
+		if !exists {return}
+		key:=strconv.FormatInt(id,10)
+		if actual.Delivered[key] {continue}
+		raw,err:=b.call(ctx,"sendMessage",map[string]any{
+			"chat_id":id,"text":adminLeadText(actual),"parse_mode":"HTML",
+			"link_preview_options":map[string]any{"is_disabled":true},
+			"reply_markup":adminLeadMarkup(actual),
 		})
-		if err != nil {
-			log.Printf("Lead %d notify admin %d: %v", lead.Number, id, err)
-			continue
+		if err!=nil {log.Printf("Lead %d notify admin %d: %v",lead.Number,id,err);continue}
+		var sent struct {MessageID int `json:"message_id"`}
+		if err=json.Unmarshal(raw,&sent);err!=nil {log.Printf("Lead delivery message receipt: %v",err)}
+		if err:=b.leads.markDelivered(lead.UserID,lead.Number,id,sent.MessageID);err!=nil{
+			log.Printf("Lead %d delivery receipt not saved: %v",lead.Number,err)
 		}
-		if err := b.leads.markDelivered(lead.UserID, id); err != nil {
-			log.Printf("Lead %d delivery receipt not saved: %v", lead.Number, err)
+	}
+}
+
+// Only numeric ADMIN_IDS may take an application into work. Old callback
+// messages are safe to click again: the state transition is idempotent.
+func (b *Bot) handleLeadAdminCallback(ctx context.Context, cb *callbackQuery) error {
+	if cb==nil || cb.From.ID<=0 || !b.adminIDs[cb.From.ID] || cb.Message==nil || cb.Message.Chat.Type!="private" || cb.Message.Chat.ID!=cb.From.ID {
+		return nil
+	}
+	raw := strings.TrimPrefix(strings.TrimPrefix(cb.Data,"lead:take:"),"lead:done:")
+	number,err:=strconv.ParseInt(raw,10,64)
+	if err!=nil || number<=0 {return nil}
+	if strings.HasPrefix(cb.Data,"lead:take:") {
+		_,_,err=b.leads.takeInWork(number,cb.From.ID)
+		if err!=nil {return b.Send(withNavigation(ctx,cb.From.ID,cb.Message.MessageID),cb.From.ID,"Не удалось изменить статус заявки: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("⬅️ К заявкам","adm:leads")}))}
+	}
+	lead,ok:=b.leads.byNumber(number)
+	if !ok {return nil}
+	b.refreshLeadAdminMessages(ctx,lead)
+	key:=strconv.FormatInt(cb.From.ID,10)
+	if lead.AdminMessages[key]!=cb.Message.MessageID {
+		// Old notifications predate persistent message-ID tracking.
+		if _,err:=b.call(ctx,"editMessageReplyMarkup",map[string]any{
+			"chat_id":cb.From.ID,"message_id":cb.Message.MessageID,"reply_markup":adminLeadMarkup(lead),
+		});err!=nil && !strings.Contains(strings.ToLower(err.Error()),"message is not modified"){
+			log.Printf("Lead %d update clicked message: %v",number,err)
+		}
+	}
+	return nil
+}
+
+// Synchronize all copies of a notification after a lead is taken, regardless
+// of which administrative screen initiated the transition.
+func (b *Bot) refreshLeadAdminMessages(ctx context.Context, lead leadApplication) {
+	for id,mid:=range lead.AdminMessages {
+		adminID,err:=strconv.ParseInt(id,10,64)
+		if err!=nil || !b.adminIDs[adminID] || mid<=0 {continue}
+		if _,err=b.call(ctx,"editMessageReplyMarkup",map[string]any{
+			"chat_id":adminID,"message_id":mid,"reply_markup":adminLeadMarkup(lead),
+		});err!=nil && !strings.Contains(strings.ToLower(err.Error()),"message is not modified"){
+			log.Printf("Lead %d update admin %d: %v",lead.Number,adminID,err)
 		}
 	}
 }
 
 func (b *Bot) retryPendingLeadNotifications(ctx context.Context) {
-	if b.leads == nil {
-		return
-	}
-	for _, item := range b.leads.allSubmitted() {
-		b.notifyLeadAdmins(ctx, item)
-	}
+	if b.leads==nil{return}
+	for _,lead:=range b.leads.allSubmitted(){b.notifyLeadAdmins(ctx,lead)}
 }
 
-func (b *Bot) showAdminLeads(ctx context.Context, chatID int64) error {
-	if b.leads == nil {
-		return b.Send(ctx, chatID, "Хранилище заявок недоступно.", nil)
-	}
-	all := b.leads.allSubmitted()
+func (b *Bot) showAdminLeads(ctx context.Context,chatID int64) error {
+	if b.leads==nil{return b.Send(ctx,chatID,"Хранилище заявок недоступно.",nil)}
+	all:=b.leads.allSubmitted()
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("📨 <b>Заявки Karty</b> · всего %d\n", len(all)))
-	if len(all) == 0 {
-		out.WriteString("\nПока заявок нет.")
-	}
-	for i, lead := range all {
-		if i >= 8 {
-			break
+	pending:=0
+	for _,lead:=range all{if !lead.TakenInWork {pending++}}
+	out.WriteString(fmt.Sprintf("📨 <b>Заявки</b>\nВсего: %d · Ожидают: %d\n",len(all),pending))
+	rows:=[][]Button{}
+	for i,lead:=range all {
+		if i>=10 {break}
+		status:="✅"
+		if !lead.TakenInWork {status="⏳"}
+		out.WriteString(fmt.Sprintf("\n%s <b>№%04d</b> · %s · %s",status,lead.Number,html.EscapeString(lead.Name),html.EscapeString(lead.LocationName)))
+		if !lead.TakenInWork {
+			rows=append(rows,[]Button{callbackButton(fmt.Sprintf("📥 №%04d · Взять в работу",lead.Number),fmt.Sprintf("adm:leadtake:%d",lead.Number))})
 		}
-		out.WriteString(fmt.Sprintf("\n<b>№%04d</b> · %s\n%s · %s · ID %d\n", lead.Number, lead.CreatedAt.Format("02.01 15:04"), html.EscapeString(lead.Name), html.EscapeString(lead.LocationName), lead.UserID))
 	}
-	return b.Send(ctx, chatID, out.String(), markup([]Button{menuButton()}))
+	if len(all)==0 {out.WriteString("\n\nЗаявок пока нет.")}
+	rows=append(rows,[]Button{callbackButton("⬅️ Админ-панель","adm:menu")})
+	return b.Send(ctx,chatID,out.String(),markup(rows...))
 }
 
 // During polling, retry failed admin deliveries without creating duplicate

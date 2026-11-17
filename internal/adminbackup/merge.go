@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"locationbot/internal/analytics"
+	"locationbot/internal/catalog"
 	"sort"
 	"strings"
 	"time"
@@ -157,4 +159,111 @@ func mergeAnalytics(archived, current []byte) ([]byte, error) {
 		return []byte{}, nil
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
+}
+
+// mergeFavorites protects the current users' choices when an older archive is
+// restored. Archive-only users are kept unless a post-backup removal cleared
+// their last favorite, which is visible in the current analytics event log.
+func mergeFavorites(archived, current, events []byte, archivedAt time.Time) ([]byte, error) {
+	read := func(raw []byte) (map[string][]string, error) {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			return map[string][]string{}, nil
+		}
+		var data map[string][]string
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return nil, err
+		}
+		if data == nil {
+			data = map[string][]string{}
+		}
+		for user, ids := range data {
+			if !digitsOnly(user) {
+				return nil, fmt.Errorf("invalid favorite user ID %q", user)
+			}
+			seen := map[string]bool{}
+			for _, id := range ids {
+				if !catalog.ValidID(id) || seen[id] {
+					return nil, fmt.Errorf("invalid favorite location %q", id)
+				}
+				seen[id] = true
+			}
+		}
+		return data, nil
+	}
+	old, err := read(archived)
+	if err != nil {
+		return nil, err
+	}
+	now, err := read(current)
+	if err != nil {
+		return nil, err
+	}
+	for user, ids := range now {
+		old[user] = append([]string(nil), ids...)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(events))
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
+		var e analytics.Event
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			return nil, err
+		}
+		if err := e.Validate(); err != nil {
+			return nil, err
+		}
+		if e.At.Before(archivedAt) || (e.Kind != analytics.FavoriteAdded && e.Kind != analytics.FavoriteRemoved) {
+			continue
+		}
+		user := fmt.Sprint(e.UserID)
+		if _, present := now[user]; !present {
+			// Current empty state is represented by absence of a user key.
+			delete(old, user)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(old, "", "  ")
+}
+
+// mergeRevisionHistory keeps newer admin audit entries when restoring an older
+// archive. Every record is deduplicated by canonical JSON and sorted by time.
+func mergeRevisionHistory(archived, current []byte) ([]byte, error) {
+	seen := map[string]json.RawMessage{}
+	for _, raw := range [][]byte{archived, current} {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			raw = []byte("[]")
+		}
+		var rows []json.RawMessage
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return nil, err
+		}
+		for _, item := range rows {
+			var check struct {
+				At         time.Time `json:"at"`
+				LocationID string    `json:"location_id"`
+			}
+			if err := json.Unmarshal(item, &check); err != nil || check.At.IsZero() || !catalog.ValidID(check.LocationID) {
+				return nil, errors.New("invalid revision history record")
+			}
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, item); err != nil {
+				return nil, err
+			}
+			seen[compact.String()] = json.RawMessage(compact.String())
+		}
+	}
+	rows := make([]json.RawMessage, 0, len(seen))
+	for _, v := range seen {
+		rows = append(rows, v)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		var a, b struct {
+			At time.Time `json:"at"`
+		}
+		_ = json.Unmarshal(rows[i], &a)
+		_ = json.Unmarshal(rows[j], &b)
+		return a.At.Before(b.At)
+	})
+	return json.MarshalIndent(rows, "", "  ")
 }

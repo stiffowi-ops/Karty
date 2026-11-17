@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func sample() []catalog.Location {
@@ -111,5 +112,51 @@ func TestRestoringOldAnalyticsPreservesNewEvents(t *testing.T) {
 	}
 	if !bytes.Contains(merged, []byte(`"location_id":"001"`)) || !bytes.Contains(merged, []byte(`"location_id":"002"`)) {
 		t.Fatalf("lost analytics: %s", merged)
+	}
+}
+
+func TestRestoringOldFavoritesPreservesNewActionsAndRemovedLastItem(t *testing.T) {
+	archived := []byte(`{"100":["020"],"200":["020"],"300":["020"]}`)
+	current := []byte(`{"100":["020","021"],"200":["021"]}`)
+	date := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	events := []byte(`{"at":"2026-11-02T10:00:00Z","user_id":300,"location_id":"020","kind":"favorite_remove"}` + "\n")
+	merged, err := mergeFavorites(archived, current, events, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string][]string
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(got["100"]) != 2 || len(got["200"]) != 1 || got["200"][0] != "021" {
+		t.Fatalf("new changes lost or removed favorites resurrected: %s", merged)
+	}
+}
+func TestRestoringOldFavoritesKeepsArchiveOnlyUsers(t *testing.T) {
+	archive := []byte(`{"100":["020"]}`)
+	data, err := mergeFavorites(archive, []byte(`{}`), nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string][]string
+	_ = json.Unmarshal(data, &result)
+	if len(result["100"]) != 1 {
+		t.Fatalf("archive-only user must restore: %s", data)
+	}
+}
+
+func TestRestoreKeepsNewAdminHistory(t *testing.T) {
+	a := []byte(`[{"at":"2026-11-01T08:00:00Z","location_id":"020","operation":"publish"}]`)
+	b := []byte(`[{"at":"2026-11-15T08:00:00Z","location_id":"020","operation":"undo"}]`)
+	merged, err := mergeRevisionHistory(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(merged, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || !bytes.Contains(merged, []byte(`"undo"`)) {
+		t.Fatalf("history lost: %s", merged)
 	}
 }

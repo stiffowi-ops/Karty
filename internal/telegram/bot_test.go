@@ -164,7 +164,7 @@ func TestCardNavigation(t *testing.T) {
 	if len(rows) != 2 || len(rows[0]) != 2 || len(rows[1]) != 1 {
 		t.Fatalf("expected two main buttons and menu on bottom: %+v", rows)
 	}
-	if rows[0][0]["callback_data"] != "page:3" || rows[0][1]["callback_data"] != "search" || rows[1][0]["callback_data"] != "menu" {
+	if rows[0][0]["callback_data"] != "page:3" || rows[0][1]["switch_inline_query_current_chat"] != "" || rows[0][1]["text"] != "🔎 Поиск локации" || rows[1][0]["callback_data"] != "menu" {
 		t.Fatalf("incorrect callbacks: %+v", rows)
 	}
 }
@@ -226,7 +226,7 @@ func TestLocationCardOmitsPhotoAndLinksToProjectMap(t *testing.T) {
 		t.Fatalf("missing keyboard: %+v", tr.card)
 	}
 	keyboardBytes, _ := json.Marshal(kb)
-	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "search") || !strings.Contains(string(keyboardBytes), "menu") {
+	if !strings.Contains(string(keyboardBytes), "page:2") || !strings.Contains(string(keyboardBytes), "switch_inline_query_current_chat") || !strings.Contains(string(keyboardBytes), "menu") {
 		t.Fatalf("missing nav buttons: %s", keyboardBytes)
 	}
 	if !strings.Contains(string(keyboardBytes), "fav:toggle:017:2") || !strings.Contains(string(keyboardBytes), "Добавить в избранное") {
@@ -365,7 +365,7 @@ func TestStartCommandSendsWelcomeWithInlineMenuAndNearLast(t *testing.T) {
 	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
 	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
-	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search")
+	assertButton(1, 1, "🔎 Поиск локации", "switch_inline_query_current_chat", "")
 	assertButton(2, 0, "📍 Рядом со мной", "callback_data", "near")
 	if lastRow, _ := rows[2].([]any); len(lastRow) != 1 {
 		t.Fatalf("nearby button should be alone in last row: %+v", lastRow)

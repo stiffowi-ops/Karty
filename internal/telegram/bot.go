@@ -64,6 +64,7 @@ type update struct {
 	UpdateID int64          `json:"update_id"`
 	Message  *message       `json:"message"`
 	Callback *callbackQuery `json:"callback_query"`
+	InlineQuery *inlineQuery `json:"inline_query"`
 }
 type apiResult struct {
 	OK          bool            `json:"ok"`
@@ -84,7 +85,7 @@ func homeMarkup() any                          { return markup([]Button{menuButt
 func startMenuMarkup(mapURL string) map[string]any {
 	return markup(
 		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
-		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search")},
+		[]Button{callbackButton("⭐ Избранное", "favorites"), inlineSearchButton()},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
 	)
 }
@@ -439,13 +440,14 @@ func locationBackRows(backPage int) [][]Button {
 		backPage = 0
 	}
 	return [][]Button{
-		{callbackButton("⬅️ К списку", fmt.Sprintf("page:%d", backPage)), callbackButton("🔎 Поиск локации", "search")},
+		{callbackButton("⬅️ К списку", fmt.Sprintf("page:%d", backPage)), inlineSearchButton()},
 		{menuButton()},
 	}
 }
 
 func (b *Bot) requestStationSearch(ctx context.Context, chatID int64) error {
-	return b.Send(ctx, chatID, "🔎 <b>Поиск локации</b>\n\nНапиши название локации или её часть. Например, <b>Троицк</b>.", markup(
+	return b.Send(ctx, chatID, "🔎 <b>Поиск локации</b>\n\nНажми «Начать поиск» и вводи название. Telegram покажет подходящие локации по мере набора. Можно также просто отправить название сообщением.", markup(
+		[]Button{inlineSearchButton()},
 		[]Button{callbackButton("⬅️ К списку", "page:0")},
 		[]Button{menuButton()},
 	))
@@ -732,7 +734,13 @@ func (b *Bot) showNear(ctx context.Context, chatID int64, p *geoPoint) error {
 	return b.Send(ctx, chatID, "<b>Ближайшие локации</b> 📍\nРасстояния рассчитаны <b>по прямой</b>, а не по маршруту. Нажми на локацию, чтобы посмотреть описание и оценку.\n\nГеопозицию бот не сохраняет.", markup(rows...))
 }
 func (b *Bot) handle(ctx context.Context, u update) error {
+	if u.InlineQuery != nil {
+		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
+	}
 	if u.Callback != nil {
+		if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
+			return b.toggleInlineFavorite(ctx, u.Callback)
+		}
 		b.answerCallback(ctx, u.Callback.ID)
 		if u.Callback.Message == nil {
 			return nil
@@ -945,7 +953,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	log.Println("Telegram long polling started (no Mini App, no open ports)")
 	for ctx.Err() == nil {
-		raw, err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "limit": 30, "allowed_updates": []string{"message", "callback_query"}})
+		raw, err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "limit": 30, "allowed_updates": []string{"message", "callback_query", "inline_query"}})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil

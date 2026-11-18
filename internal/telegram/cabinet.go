@@ -50,7 +50,7 @@ func (b *Bot) showCabinet(ctx context.Context, chatID, userID int64) error {
 	if err := b.pauseClientForms(userID); err != nil {
 		return err
 	}
-	text := "📋 <b>Мои заявки</b>\n\nЗдесь можно проверить статус обращения, дополнить его и посмотреть историю."
+	text := "📋 <b>Мои заявки</b>\n\nЗдесь Вы можете проверить статус обращения, добавить интересующие локации или отправить уточнение. Предыдущие заявки всегда доступны в истории."
 	rows := [][]Button{}
 	if l, ok := b.leads.submitted(userID); ok && !l.isResolved() {
 		text += fmt.Sprintf("\n\n<b>Активное обращение №%04d</b>\n%s\nЛокаций: %d", l.Number, leadStatus(l), len(l.locations()))

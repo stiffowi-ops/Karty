@@ -308,8 +308,8 @@ func TestCatalogPageUsesFriendlyLocationIntroduction(t *testing.T) {
 		text, _ := tr.card["text"].(string)
 		for _, want := range []string{
 			"<b>📍 Каталог локаций</b>",
-			"Здесь собран список локаций с подробным описанием и возможностями для бизнеса.",
-			"сохраняй понравившиеся варианты в избранное ⭐",
+			"Изучите доступные локации и выберите подходящую для Вашего бизнеса.",
+			"понравившиеся варианты сохраните в избранное.",
 			tc.expected,
 		} {
 			if !strings.Contains(text, want) {

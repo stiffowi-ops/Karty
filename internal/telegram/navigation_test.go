@@ -41,7 +41,7 @@ func TestNavigationEditsSingleBotMessageAcrossTabs(t *testing.T){
  {"loc:001:0","Ашан Марфино"},
  {"menu","Точки роста твоего бизнеса"},
  {"favorites","Избранное"},
- {"near","Найди локации рядом"},
+ {"near","Локации рядом с Вами"},
  } {
   cb:=&callbackQuery{ID:"callback-id",Data:tc.cb,From:user{ID:55,FirstName:"Иван"},Message:&message{MessageID:500,Chat:chat{ID:123,Type:"private"}}}
   if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatalf("callback %s: %v",tc.cb,err)}

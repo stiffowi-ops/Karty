@@ -49,7 +49,7 @@ func (b *Bot) openLead(ctx context.Context, chatID, userID int64, source, sugges
 		return b.Send(ctx, chatID, "Приём заявок временно недоступен. Пожалуйста, попробуйте позже.", markup([]Button{menuButton()}))
 	}
 	if previous, exists := b.leads.submitted(userID); exists && !previous.isResolved() {
-		if source == "card" && suggestedID != "" {
+		if source == "card" && suggestedID != "" && !previous.supplementLimitReached() {
 			return b.Send(ctx, chatID, fmt.Sprintf("У Вас есть активное обращение №%04d. Добавить выбранную локацию к нему?", previous.Number), markup([]Button{callbackButton("➕ Добавить к моему обращению", fmt.Sprintf("cab:add:%d:%s", previous.Number, suggestedID))}, []Button{caseButton("📂 Открыть обращение", previous.Number), cabinetButton()}))
 		}
 		return b.leadAlreadySent(ctx, chatID, previous)
@@ -94,6 +94,9 @@ func (b *Bot) startLead(ctx context.Context, chatID, userID int64, source, sugge
 }
 
 func (b *Bot) leadAlreadySent(ctx context.Context, chatID int64, previous leadApplication) error {
+	if previous.supplementLimitReached() {
+		return b.Send(ctx, chatID, supplementLimitText, markup([]Button{caseButton("📂 Открыть заявку", previous.Number), cabinetButton()}))
+	}
 	return b.Send(ctx, chatID, fmt.Sprintf("📂 <b>У Вас есть активное обращение №%04d</b>\n%s\n\nВы можете добавить локации и уточнения к этому обращению. После его завершения можно будет создать новое.", previous.Number, leadStatus(previous)), markup(
 		[]Button{caseButton("📂 Открыть обращение", previous.Number)},
 		[]Button{callbackButton("➕ Добавить локацию", fmt.Sprintf("cab:add:%d", previous.Number)), callbackButton("💬 Уточнить", fmt.Sprintf("cab:comment:%d", previous.Number))},
@@ -530,11 +533,20 @@ func adminLeadText(lead leadApplication) string {
 			pending++
 		}
 	}
-	if len(lead.Updates) > 0 {
+	if lead.isResolved() && len(lead.Updates) > 0 {
+		b.WriteString(fmt.Sprintf("\nДополнений: %d", len(lead.Updates)))
+	} else if len(lead.Updates) > 0 {
 		b.WriteString(fmt.Sprintf("\nДополнений: %d · Ожидают принятия: %d", len(lead.Updates), pending))
 	}
-	if lead.isResolved() {
+	if lead.isResolved() && lead.Resolution != "" {
 		b.WriteString("\n\n<b>Итог</b>\n" + html.EscapeString(limitCaptionUnits(lead.Resolution, 450)) + "\nПолный итог — в истории обращения.")
+	}
+	if lead.isResolved() && lead.ServiceVersion >= 2 {
+		if lead.ResolvedBy == 0 {
+			b.WriteString("\nЗавершена автоматически.")
+		} else {
+			b.WriteString("\nЗавершена администратором.")
+		}
 	}
 	return b.String()
 }
@@ -546,7 +558,7 @@ func adminLeadMarkup(lead leadApplication) map[string]any {
 	if lead.isResolved() {
 		rows = append(rows, []Button{{"text": "✅ Решено", "callback_data": fmt.Sprintf("adm:case:view:%d", lead.Number), "style": "success"}})
 	} else if lead.TakenInWork {
-		rows = append(rows, []Button{{"text": "✅ Взято в работу", "callback_data": fmt.Sprintf("lead:done:%d", lead.Number), "style": "success"}}, []Button{callbackButton("✅ Решить обращение", fmt.Sprintf("adm:case:resolve:%d", lead.Number))})
+		rows = append(rows, []Button{{"text": "✅ Взято в работу", "callback_data": fmt.Sprintf("lead:done:%d", lead.Number), "style": "success"}}, []Button{callbackButton("✅ Завершить заявку", fmt.Sprintf("adm:case:resolve:%d", lead.Number))})
 	} else {
 		rows = append(rows, []Button{callbackButton("📥 Взять в работу", fmt.Sprintf("lead:take:%d", lead.Number))})
 	}
@@ -604,7 +616,6 @@ func (b *Bot) handleLeadAdminCallback(ctx context.Context, cb *callbackQuery) er
 	if cb == nil || cb.From.ID <= 0 || !b.adminIDs[cb.From.ID] || cb.Message == nil || cb.Message.Chat.Type != "private" || cb.Message.Chat.ID != cb.From.ID {
 		return nil
 	}
-	b.clearResolutionSession(cb.From.ID)
 	raw := strings.TrimPrefix(strings.TrimPrefix(cb.Data, "lead:take:"), "lead:done:")
 	number, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || number <= 0 {

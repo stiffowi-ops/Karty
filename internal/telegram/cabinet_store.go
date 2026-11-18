@@ -36,6 +36,22 @@ type supplementDraft struct {
 	Paused    bool           `json:"paused,omitempty"`
 }
 
+const maxCaseSupplements = 2
+const supplementLimitText = "Вы уже отправили два дополнения к этой заявке. Пожалуйста, дождитесь ответа специалиста. Статус можно проверить в разделе «Мои заявки»."
+const processedText = "✅ Заявка обработана."
+
+func (l leadApplication) supplementLimitReached() bool { return len(l.Updates) >= maxCaseSupplements }
+
+func (l leadApplication) supplementError(now time.Time) error {
+	if l.isResolved() || l.autoCloseDue(now) {
+		return errors.New("Срок подачи дополнений завершён. Откройте «Мои заявки», чтобы посмотреть статус.")
+	}
+	if l.supplementLimitReached() {
+		return errors.New(supplementLimitText)
+	}
+	return nil
+}
+
 func (l leadApplication) isResolved() bool { return l.ResolvedAt != nil }
 func (l leadApplication) locations() []leadLocation {
 	if len(l.Locations) > 0 {
@@ -110,6 +126,9 @@ func (s *leadStore) putSupplement(userID int64, d supplementDraft) error {
 	if !ok || l.Number != d.Number || l.isResolved() {
 		return errors.New("обращение уже завершено или недоступно")
 	}
+	if err := l.supplementError(time.Now()); err != nil {
+		return err
+	}
 	next := s.cloneLocked()
 	next.Supplements[key] = cloneSupplementDraft(d)
 	return s.saveLocked(next)
@@ -176,8 +195,8 @@ func (s *leadStore) submitSupplement(userID, number int64, token string) (leadAp
 			return cloneLead(l), false, nil
 		}
 	}
-	if l.isResolved() {
-		return leadApplication{}, false, errors.New("обращение уже решено; создайте новое")
+	if err := l.supplementError(time.Now()); err != nil {
+		return leadApplication{}, false, err
 	}
 	d, ok := s.state.Supplements[key]
 	if !ok || d.Number != number || d.Token != token || d.Stage != "review" {
@@ -215,7 +234,7 @@ func (s *leadStore) submitSupplement(userID, number int64, token string) (leadAp
 	if l.ServiceVersion == 0 && l.TakenInWork {
 		setNotice(&l, "client:taken")
 	}
-	l.ServiceVersion = 1
+	l.ServiceVersion = max(l.ServiceVersion, 1)
 	l.Locations = locations
 	l.Updates = append(l.Updates, leadUpdate{ID: len(l.Updates) + 1, Token: token, Locations: added, Comment: comment, CreatedAt: time.Now().UTC()})
 	next.Submitted[key] = l
@@ -281,46 +300,60 @@ func (s *leadStore) acceptUpdate(number int64, updateID int, adminID int64) (lea
 		if u.AcceptedAt != nil {
 			return false, nil
 		}
-		if l.isResolved() {
-			return false, errors.New("обращение уже решено")
-		}
 		now := time.Now().UTC()
+		if l.isResolved() || l.autoCloseDue(now) {
+			return false, errors.New("обращение уже завершено")
+		}
 		u.AcceptedAt = &now
 		u.AcceptedBy = adminID
 		return true, nil
 	})
 }
-func (s *leadStore) resolveCase(number, adminID int64, version int, summary string) (leadApplication, bool, error) {
-	summary = strings.TrimSpace(summary)
-	if adminID <= 0 || len([]rune(summary)) < 3 || len([]rune(summary)) > 1000 {
-		return leadApplication{}, false, errors.New("укажите итог от 3 до 1000 символов")
+func (s *leadStore) resolveCase(number, adminID int64) (leadApplication, bool, error) {
+	if adminID <= 0 {
+		return leadApplication{}, false, errors.New("неверный специалист")
 	}
 	return s.mutateCase(number, func(l *leadApplication) (bool, error) {
 		if l.isResolved() {
 			return false, nil
 		}
 		if !l.TakenInWork {
-			return false, errors.New("сначала возьмите обращение в работу")
+			return false, errors.New("Сначала возьмите заявку в работу.")
 		}
-		if version != len(l.Updates) {
-			return false, errors.New("появилось новое дополнение; изучите его и повторите завершение")
+		now := time.Now().UTC()
+		if deadline := l.autoCloseAt(); !deadline.IsZero() && !now.Before(deadline) {
+			l.complete(deadline, 0)
+			return true, nil
 		}
 		for _, u := range l.Updates {
 			if u.AcceptedAt == nil {
-				return false, errors.New("сначала примите все дополнения клиента")
+				return false, errors.New("Сначала примите все дополнения клиента.")
 			}
 		}
-		now := time.Now().UTC()
-		l.ResolvedAt = &now
-		l.ResolvedBy = adminID
-		l.Resolution = summary
-		if l.ServiceVersion == 0 {
-			setNotice(l, "client:taken")
-		}
-		l.ServiceVersion = 1
+		l.complete(now, adminID)
 		return true, nil
 	})
 }
+
+func (l *leadApplication) complete(at time.Time, adminID int64) {
+	l.ResolvedAt, l.ResolvedBy = &at, adminID
+	if l.ServiceVersion == 0 {
+		setNotice(l, "client:taken")
+	}
+	l.ServiceVersion = 2
+}
+
+func (l leadApplication) autoCloseAt() time.Time {
+	if !l.TakenInWork || l.Hidden || l.isResolved() || l.TakenAt == nil || l.TakenAt.IsZero() {
+		return time.Time{}
+	}
+	return l.TakenAt.Add(time.Hour)
+}
+func (l leadApplication) autoCloseDue(now time.Time) bool {
+	deadline := l.autoCloseAt()
+	return !deadline.IsZero() && !now.Before(deadline)
+}
+
 func setNotice(l *leadApplication, key string) {
 	if l.NoticeReceipts == nil {
 		l.NoticeReceipts = map[string]bool{}

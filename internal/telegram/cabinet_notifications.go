@@ -31,7 +31,7 @@ func supplementAdminMarkup(l leadApplication, u leadUpdate) any {
 	rows := [][]Button{{adminCaseButton(l.Number)}}
 	if u.AcceptedAt == nil && !l.isResolved() {
 		rows = append(rows, []Button{callbackButton("✅ Принять дополнение", fmt.Sprintf("adm:case:ack:%d:%d", l.Number, u.ID))})
-	} else {
+	} else if u.AcceptedAt != nil {
 		rows = append(rows, []Button{{"text": "✅ Дополнение принято", "callback_data": fmt.Sprintf("adm:case:view:%d", l.Number), "style": "success"}})
 	}
 	return markup(rows...)
@@ -74,7 +74,10 @@ func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key stri
 			return
 		}
 		id, e := strconv.Atoi(parts[1])
-		if e != nil || id <= 0 || id > len(latest.Updates) || latest.Updates[id-1].AcceptedAt != nil || latest.isResolved() {
+		if e != nil || id <= 0 || id > len(latest.Updates) || latest.Updates[id-1].AcceptedAt != nil {
+			return
+		}
+		if latest.isResolved() && parts[2] != "initial" {
 			return
 		}
 		if latest.TakenInWork && b.adminIDs[latest.TakenBy] {
@@ -193,23 +196,30 @@ func (b *Bot) notifySelectedCaseEvents(ctx context.Context, now time.Time, cases
 			continue
 		}
 		if l.TakenInWork && !l.isResolved() {
-			send(l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\nСтатус и возможность дополнить обращение доступны в разделе «Мои заявки».", l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
+			note := "Статус доступен в разделе «Мои заявки»."
+			if !l.supplementLimitReached() {
+				note = "Статус и возможность дополнить обращение доступны в разделе «Мои заявки»."
+			}
+			send(l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\n%s", l.Number, note), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 		}
 		for _, u := range l.Updates {
 			if u.AcceptedAt != nil {
 				send(l, fmt.Sprintf("client:ack:%d", u.ID), l.UserID, fmt.Sprintf("✅ <b>Специалист принял дополнение №%d к обращению №%04d.</b>", u.ID, l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 				continue
 			}
-			if l.isResolved() {
-				continue
-			}
 			for _, id := range b.caseAdminRecipients(l) {
 				send(l, updateKey(u.ID, "initial", id), id, supplementAdminText(l, u, "initial"), supplementAdminMarkup(l, u))
 			}
-			b.notifySupplementReminder(l, u, reminderClock(), send)
+			if !l.isResolved() {
+				b.notifySupplementReminder(l, u, reminderClock(), send)
+			}
 		}
 		if l.isResolved() {
-			send(l, "client:resolved", l.UserID, fmt.Sprintf("✅ <b>Обращение №%04d решено.</b>\n\n<b>Итог</b>\n%s\n\nИстория сохранена в разделе «Мои заявки».", l.Number, html.EscapeString(l.Resolution)), markup([]Button{caseButton("📂 Посмотреть обращение", l.Number), cabinetButton()}))
+			text := processedText
+			if l.Resolution != "" {
+				text += "\n\n<b>Итог</b>\n" + html.EscapeString(l.Resolution)
+			}
+			send(l, "client:resolved", l.UserID, text, markup([]Button{caseButton(fmt.Sprintf("📂 Заявка №%04d", l.Number), l.Number), cabinetButton()}))
 		}
 	}
 }
@@ -229,7 +239,7 @@ func (b *Bot) refreshSupplementMessages(ctx context.Context, l leadApplication) 
 			continue
 		}
 		u := l.Updates[id-1]
-		if u.AcceptedAt == nil {
+		if u.AcceptedAt == nil && !l.isResolved() {
 			continue
 		}
 		if _, err := b.call(ctx, "editMessageReplyMarkup", map[string]any{"chat_id": admin, "message_id": mid, "reply_markup": supplementAdminMarkup(l, u)}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "message is not modified") {

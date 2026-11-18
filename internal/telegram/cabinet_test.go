@@ -111,11 +111,11 @@ func TestSupplementAtomicIdempotencyDeepCopiesAndRestart(t *testing.T) {
 		t.Fatal("other client submitted update")
 	}
 }
-func TestResolveRequiresAcceptedCurrentVersionAndRetainsHistory(t *testing.T) {
+func TestManualCompletionRequiresAcceptedUpdatesAndRetainsHistory(t *testing.T) {
 	b, _ := makeLeadTestBot(t)
 	l := serviceLead(t, b, 200)
 	l = sendStoredSupplement(t, b, l.Number, []string{"002"}, "Первое уточнение")
-	if _, _, err := b.leads.resolveCase(l.Number, 200, 1, "Всё обсудили"); err == nil {
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err == nil {
 		t.Fatal("resolved with unread update")
 	}
 	if _, changed, err := b.leads.acceptUpdate(l.Number, 1, 200); err != nil || !changed {
@@ -125,17 +125,17 @@ func TestResolveRequiresAcceptedCurrentVersionAndRetainsHistory(t *testing.T) {
 		t.Fatal("second acknowledgment was not idempotent", err)
 	}
 	l = sendStoredSupplement(t, b, l.Number, nil, "Ещё один вопрос")
-	if _, _, err := b.leads.resolveCase(l.Number, 200, 1, "Всё обсудили"); err == nil {
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err == nil {
 		t.Fatal("stale completion ignored a new update")
 	}
 	if _, _, err := b.leads.acceptUpdate(l.Number, 2, 200); err != nil {
 		t.Fatal(err)
 	}
-	resolved, changed, err := b.leads.resolveCase(l.Number, 200, 2, "Обсудили обе локации; материалы отправлены")
+	resolved, changed, err := b.leads.resolveCase(l.Number, 200)
 	if err != nil || !changed || !resolved.isResolved() {
 		t.Fatal(changed, err)
 	}
-	if _, changed, err := b.leads.resolveCase(l.Number, 300, 2, "Другой итог"); err != nil || changed {
+	if _, changed, err := b.leads.resolveCase(l.Number, 300); err != nil || changed {
 		t.Fatal("repeat completion changed result", err)
 	}
 	if err := b.leads.putSupplement(100, supplementDraft{Number: l.Number, Token: "late", Stage: "review", Comment: "Поздно"}); err == nil {
@@ -176,7 +176,7 @@ func TestResolveAndSupplementRaceCannotLoseTheUpdate(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, _ = b.leads.submitSupplement(100, l.Number, d.Token) }()
-		go func() { defer wg.Done(); _, _, _ = b.leads.resolveCase(l.Number, 200, 0, "Вопрос решён") }()
+		go func() { defer wg.Done(); _, _, _ = b.leads.resolveCase(l.Number, 200) }()
 		wg.Wait()
 		got, _ := b.leads.byNumber(l.Number)
 		if got.isResolved() && len(got.Updates) > 0 {
@@ -370,7 +370,7 @@ func TestSupplementRoutingRetriesRemindersAndLifecycleNotifications(t *testing.T
 	if tr.count(100, "взято в работу") != 1 || tr.count(100, "Специалист принял дополнение") != 2 {
 		t.Fatal("client lifecycle notices missing or duplicated")
 	}
-	if _, _, err := b.leads.resolveCase(l.Number, 200, 2, "Вопросы решены; материалы отправлены"); err != nil {
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err != nil {
 		t.Fatal(err)
 	}
 	b.notifyCaseEvents(ctx, now)
@@ -380,46 +380,50 @@ func TestSupplementRoutingRetriesRemindersAndLifecycleNotifications(t *testing.T
 	}
 	b.leads = restored
 	b.notifyCaseEvents(ctx, now.Add(24*time.Hour))
-	if tr.count(100, "решено.") != 1 || tr.count(300, "‼️ Дополнение") != 2 {
+	if tr.count(100, processedText) != 1 || tr.count(300, "‼️ Дополнение") != 2 {
 		t.Fatal("restart repeated finished notifications or reminders")
 	}
 }
-func TestAdminResolutionReviewRejectsConcurrentSupplement(t *testing.T) {
+func TestAdminCompletesInOneClickWithoutAComment(t *testing.T) {
 	b, _ := makeLeadTestBot(t)
-	l := serviceLead(t, b, 200)
+	l := serviceLead(t, b, 0)
 	ctx := context.Background()
-	admin := user{ID: 200}
-	if err := b.handleCaseAdminCallback(ctx, admin, "adm:case:resolve:1"); err != nil {
+	tr := &caseTransport{}
+	b.http = &http.Client{Transport: tr}
+	click := func(id int64) {
+		t.Helper()
+		if err := b.handleCaseAdminCallback(ctx, user{ID: id}, "adm:case:resolve:1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click(200)
+	before, _ := b.leads.byNumber(l.Number)
+	if before.isResolved() {
+		t.Fatal("unassigned request closed")
+	}
+	if _, _, err := b.leads.takeInWork(l.Number, 200); err != nil {
 		t.Fatal(err)
 	}
-	if handled, err := b.handleResolutionText(ctx, 200, admin, "Все вопросы обсудили"); !handled || err != nil {
-		t.Fatal(handled, err)
+	click(999)
+	before, _ = b.leads.byNumber(l.Number)
+	if before.isResolved() {
+		t.Fatal("unauthorized completion")
 	}
-	token := b.adminSession(200).ResolveToken
-	_ = sendStoredSupplement(t, b, l.Number, nil, "Уточните условия")
-	if err := b.handleCaseAdminCallback(ctx, admin, "adm:case:finish:1:"+token); err != nil {
-		t.Fatal(err)
+	click(200)
+	click(300)
+	b.processLeadDeliveries(ctx)
+	got, _ := b.leads.byNumber(l.Number)
+	if !got.isResolved() || got.ResolvedBy != 200 || got.Resolution != "" {
+		t.Fatalf("manual result: %+v", got)
 	}
-	got, _ := b.leads.byNumber(1)
-	if got.isResolved() {
-		t.Fatal("stale completion closed new update")
+	b.notifyCaseEvents(ctx, time.Now())
+	if tr.count(100, processedText) != 1 {
+		t.Fatal("expected one completion notice")
 	}
-	if _, _, err := b.leads.acceptUpdate(1, 1, 200); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.handleCaseAdminCallback(ctx, admin, "adm:case:resolve:1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.handleResolutionText(ctx, 200, admin, "Обсудили уточнение и отправили условия"); err != nil {
-		t.Fatal(err)
-	}
-	token = b.adminSession(200).ResolveToken
-	if err := b.handleCaseAdminCallback(ctx, admin, "adm:case:finish:1:"+token); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = b.leads.byNumber(1)
-	if !got.isResolved() || got.Resolution != "Обсудили уточнение и отправили условия" {
-		t.Fatal("resolution lost")
+	for _, call := range tr.calls {
+		if call["chat_id"] == float64(100) && strings.Contains(fmt.Sprint(call["text"]), processedText) && call["text"] != processedText {
+			t.Fatal("unexpected text in completion notice", call["text"])
+		}
 	}
 	if err := b.showClientArchive(ctx, 100, 100, 0, true); err != nil {
 		t.Fatal(err)
@@ -435,7 +439,7 @@ func TestUnsentSupplementDoesNotBlockTheNextApplication(t *testing.T) {
 	if err := b.leads.putSupplement(100, d); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := b.leads.resolveCase(l.Number, 200, 0, "Обращение завершено"); err != nil {
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := b.leads.supplement(100); ok {
@@ -468,7 +472,11 @@ func TestEveryHistoryPageAndMaximumMessageSize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	l, _, err := b.leads.resolveCase(l.Number, 200, 1, strings.Repeat("😀", 1000))
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err != nil {
+		t.Fatal(err)
+	}
+	// Previously completed cases can contain a long written result.
+	l, _, err := b.leads.mutateCase(l.Number, func(v *leadApplication) (bool, error) { v.Resolution = strings.Repeat("😀", 1000); return true, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

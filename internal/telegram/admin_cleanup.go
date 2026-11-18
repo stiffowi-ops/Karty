@@ -114,7 +114,7 @@ func (b *Bot) showAdminCleanup(ctx context.Context, chatID int64, s *adminSessio
 	msg := fmt.Sprintf("🗑 <b>Управление данными · %s</b>\n\nРаздел: <b>%s</b>\nВсего: %d · Выбрано: %d\nСтраница %d/%d\n\nНажимайте на записи для выбора. Можно выбрать несколько записей на разных страницах.",
 		kindName, section, len(items), len(s.CleanupSelected), s.CleanupPage+1, pages)
 	if s.CleanupKind == "l" && !s.CleanupTrash {
-		msg += "\n\nАктивные обращения нельзя скрыть или удалить. Сначала завершите обращение с итогом для клиента."
+		msg += "\n\nАктивные обращения нельзя скрыть или удалить. Сначала завершите обращение."
 	}
 	if s.CleanupTrash {
 		msg += "\n\nВосстановление вернёт запись в список. Окончательное удаление уберёт её с сервера, а не из уже доставленных сообщений Telegram."

@@ -322,7 +322,7 @@ func (s *leadStore) byNumber(number int64) (leadApplication, bool) {
 }
 
 // takeInWork assigns the first administrator atomically. The application
-// remains active until it is explicitly resolved with a summary.
+// keeps its original TakenAt on subsequent clicks and after a restart.
 func (s *leadStore) takeInWork(number, adminID int64) (leadApplication, bool, error) {
 	if s == nil || number <= 0 || adminID <= 0 {
 		return leadApplication{}, false, errors.New("invalid application or administrator")
@@ -342,7 +342,7 @@ func (s *leadStore) takeInWork(number, adminID int64) (leadApplication, bool, er
 			return cloneLead(lead), false, nil
 		}
 		lead.TakenInWork, lead.TakenBy, lead.TakenAt = true, adminID, &now
-		lead.ServiceVersion = 1
+		lead.ServiceVersion = 2
 		next.Submitted[key] = lead
 		if err := s.saveLocked(next); err != nil {
 			return leadApplication{}, false, err
@@ -360,7 +360,7 @@ func (s *leadStore) takeInWork(number, adminID int64) (leadApplication, bool, er
 			return cloneLead(lead), false, nil
 		}
 		lead.TakenInWork, lead.TakenBy, lead.TakenAt = true, adminID, &now
-		lead.ServiceVersion = 1
+		lead.ServiceVersion = 2
 		next.History[i] = lead
 		if err := s.saveLocked(next); err != nil {
 			return leadApplication{}, false, err
@@ -418,7 +418,7 @@ func (s *leadStore) setHidden(numbers []int64, hidden bool) error {
 				continue
 			}
 			if hidden && !lead.isResolved() {
-				return fmt.Errorf("сначала завершите обращение №%04d с итогом", n)
+				return fmt.Errorf("сначала завершите обращение №%04d", n)
 			}
 			if lead.Hidden == hidden {
 				return fmt.Errorf("заявка №%04d уже имеет этот статус", n)
@@ -434,7 +434,7 @@ func (s *leadStore) setHidden(numbers []int64, hidden bool) error {
 					continue
 				}
 				if hidden && !lead.isResolved() {
-					return fmt.Errorf("сначала завершите обращение №%04d с итогом", n)
+					return fmt.Errorf("сначала завершите обращение №%04d", n)
 				}
 				if lead.Hidden == hidden {
 					return fmt.Errorf("заявка №%04d уже имеет этот статус", n)

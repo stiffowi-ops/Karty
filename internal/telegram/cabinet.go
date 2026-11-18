@@ -17,6 +17,9 @@ func cabinetButton() Button {
 func (b *Bot) homeLeadAction(userID int64) Button {
 	if b.leads != nil {
 		if lead, ok := b.leads.submitted(userID); ok && !lead.isResolved() {
+			if lead.supplementLimitReached() {
+				return caseButton("📂 Посмотреть заявку", lead.Number)
+			}
 			data := fmt.Sprintf("cab:add:%d", lead.Number)
 			if draft, ok := b.leads.supplement(userID); ok && draft.Number == lead.Number {
 				data = supplementData("resume", draft, "")
@@ -51,6 +54,9 @@ func (b *Bot) showCabinet(ctx context.Context, chatID, userID int64) error {
 	rows := [][]Button{}
 	if l, ok := b.leads.submitted(userID); ok && !l.isResolved() {
 		text += fmt.Sprintf("\n\n<b>Активное обращение №%04d</b>\n%s\nЛокаций: %d", l.Number, leadStatus(l), len(l.locations()))
+		if l.supplementLimitReached() {
+			text += "\n" + supplementLimitText
+		}
 		rows = append(rows, []Button{caseButton("📂 Открыть обращение", l.Number)})
 	} else {
 		text += "\n\nАктивных обращений нет."
@@ -60,7 +66,7 @@ func (b *Bot) showCabinet(ctx context.Context, chatID, userID int64) error {
 		rows = append(rows, []Button{callbackButton("▶️ Продолжить заполнение заявки", "lead:resume")})
 	}
 	if d, ok := b.leads.supplement(userID); ok {
-		if l, exists := b.leads.byNumber(d.Number); exists && !l.isResolved() {
+		if l, exists := b.leads.byNumber(d.Number); exists && !l.isResolved() && !l.supplementLimitReached() {
 			rows = append(rows, []Button{callbackButton("▶️ Продолжить дополнение", supplementData("resume", d, ""))})
 		}
 	}
@@ -90,15 +96,20 @@ func (b *Bot) showClientCase(ctx context.Context, chatID, userID, number int64) 
 		}
 		if u.AcceptedAt != nil {
 			text += "✅ Специалист принял дополнение.\n"
-		} else {
+		} else if !l.isResolved() {
 			text += "⏳ Ожидает принятия специалистом.\n"
 		}
 	}
 	if l.isResolved() {
-		text += "\n<b>Итог</b>\n" + html.EscapeString(l.Resolution) + "\n\nРешено: " + caseTime(*l.ResolvedAt)
+		if l.Resolution != "" {
+			text += "\n<b>Итог</b>\n" + html.EscapeString(l.Resolution)
+		}
+		text += "\n" + processedText + " " + caseTime(*l.ResolvedAt)
 	}
 	rows := [][]Button{}
-	if editable {
+	if editable && l.supplementLimitReached() {
+		text += "\n" + supplementLimitText
+	} else if editable {
 		rows = append(rows, []Button{callbackButton("➕ Добавить локацию", fmt.Sprintf("cab:add:%d", number))}, []Button{callbackButton("💬 Написать уточнение", fmt.Sprintf("cab:comment:%d", number))})
 	} else if !l.isResolved() {
 		text += "\nЭто предыдущее обращение из архива. Для дополнений откройте текущую заявку в разделе «Мои заявки»."
@@ -168,7 +179,11 @@ func caseEvents(l leadApplication) []caseEvent {
 		}
 	}
 	if l.ResolvedAt != nil {
-		events = append(events, caseEvent{*l.ResolvedAt, "✅ Обращение решено.\n" + html.EscapeString(l.Resolution)})
+		text := processedText
+		if l.Resolution != "" {
+			text += "\n" + html.EscapeString(l.Resolution)
+		}
+		events = append(events, caseEvent{*l.ResolvedAt, text})
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].at.After(events[j].at) })
 	return events
@@ -215,6 +230,9 @@ func (b *Bot) beginSupplement(ctx context.Context, chatID, userID, number int64,
 	if !ok || !exists || active.Number != number || l.isResolved() {
 		return b.Send(ctx, chatID, "Дополнить можно текущее активное обращение.", markup([]Button{cabinetButton()}))
 	}
+	if err := l.supplementError(time.Now()); err != nil {
+		return b.Send(ctx, chatID, err.Error(), markup([]Button{caseButton("📂 Открыть заявку", number)}))
+	}
 	if err := b.pauseClientForms(userID); err != nil {
 		return err
 	}
@@ -249,7 +267,7 @@ func (b *Bot) beginSupplement(ctx context.Context, chatID, userID, number int64,
 	return b.showSupplement(ctx, chatID, userID, d)
 }
 func (b *Bot) showSupplement(ctx context.Context, chatID, userID int64, d supplementDraft) error {
-	text := fmt.Sprintf("➕ <b>Дополнение к обращению №%04d</b>\n\n", d.Number)
+	text := fmt.Sprintf("➕ <b>Дополнение к обращению №%04d</b>\nК одной заявке можно отправить два дополнения.\n\n", d.Number)
 	rows := [][]Button{}
 	switch d.Stage {
 	case "comment":
@@ -316,7 +334,6 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 	if b.leads == nil {
 		return b.Send(ctx, chatID, "Раздел «Мои заявки» временно недоступен.", homeMarkup())
 	}
-	b.clearResolutionSession(from.ID)
 	p := strings.Split(data, ":")
 	if len(p) < 2 {
 		return nil
@@ -376,11 +393,23 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 		}
 		text := "Это дополнение уже отправлено."
 		if changed {
-			text = "✅ Дополнение сохранено и передано специалисту. Статус дополнения можно проверить в разделе «Мои заявки»."
+			text = "✅ Дополнение отправлено. Можно отправить ещё одно дополнение к этой заявке."
+		}
+		if l.supplementLimitReached() && !l.isResolved() {
+			text = "✅ Дополнение отправлено. " + supplementLimitText
 		}
 		replyErr := b.Send(ctx, chatID, text, markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
-		b.queueLeadDelivery(l.Number)
+		if changed {
+			b.queueLeadDelivery(l.Number)
+		}
 		return replyErr
+	}
+	l, ok := b.ownCase(from.ID, number)
+	if !ok || l.isResolved() {
+		return b.showCabinet(ctx, chatID, from.ID)
+	}
+	if err := l.supplementError(time.Now()); err != nil {
+		return b.Send(ctx, chatID, err.Error(), markup([]Button{cabinetButton()}))
 	}
 	d, ok := b.leads.supplement(from.ID)
 	if !ok || d.Number != number || d.Token != token {
@@ -391,10 +420,6 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 			return err
 		}
 		return b.showClientCase(ctx, chatID, from.ID, number)
-	}
-	l, ok := b.ownCase(from.ID, number)
-	if !ok || l.isResolved() {
-		return b.showCabinet(ctx, chatID, from.ID)
 	}
 	d.Paused = false
 	switch p[1] {
@@ -467,6 +492,12 @@ func (b *Bot) handleSupplementText(ctx context.Context, chatID int64, from user,
 			return true, err
 		}
 		return false, nil
+	}
+	if limit := l.supplementError(time.Now()); limit != nil {
+		if err := b.leads.cancelSupplement(from.ID, d.Token); err != nil {
+			return true, err
+		}
+		return true, b.Send(ctx, chatID, limit.Error(), markup([]Button{cabinetButton()}))
 	}
 	if d.Stage == "comment" {
 		input = strings.TrimSpace(input)

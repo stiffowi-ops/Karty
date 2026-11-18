@@ -13,7 +13,7 @@ import (
 	"locationbot/internal/syncer"
 )
 
-const botVersion = "2.18.1"
+const botVersion = "2.18.2"
 
 func (b *Bot) configureTelegramMenu(ctx context.Context) {
 	_, err := b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{

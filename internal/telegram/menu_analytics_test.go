@@ -38,7 +38,7 @@ func TestPersonalHomeActionLifecycle(t *testing.T) {
 	if got := b.homeLeadAction(101); got["callback_data"] != "lead:open:menu" {
 		t.Fatalf("action leaked: %v", got)
 	}
-	if _, _, err := b.leads.resolveCase(l.Number, 200, 0, "Вопрос решён"); err != nil {
+	if _, _, err := b.leads.resolveCase(l.Number, 200); err != nil {
 		t.Fatal(err)
 	}
 	action("📝 Оставить заявку", "lead:open:menu")

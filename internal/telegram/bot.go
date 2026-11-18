@@ -20,8 +20,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"locationbot/internal/analytics"
 	"locationbot/internal/catalog"
- "locationbot/internal/analytics"
 	"locationbot/internal/syncer"
 )
 
@@ -35,15 +35,16 @@ type Bot struct {
 	http                      *http.Client
 	compareMu                 sync.Mutex
 	compareSelections         map[int64][]string
-	screenMu                 sync.Mutex
-	lastScreens              map[int64]int
-	searchPrompts            map[int64]int
-	botID                    int64
- metrics *analytics.Store
- adminMu sync.Mutex
- backupMu sync.Mutex
- adminStates map[int64]*adminSession
- visitors *visitorStore
+	screenMu                  sync.Mutex
+	lastScreens               map[int64]int
+	searchPrompts             map[int64]int
+	botID                     int64
+	metrics                   *analytics.Store
+	adminMu                   sync.Mutex
+	backupMu                  sync.Mutex
+	adminStates               map[int64]*adminSession
+	visitors                  *visitorStore
+	leadNotifyMu              sync.Mutex
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -60,13 +61,13 @@ type geoPoint struct {
 	Longitude float64 `json:"longitude"`
 }
 type message struct {
-	MessageID int       `json:"message_id"`
-	Text      string    `json:"text"`
-	Chat      chat      `json:"chat"`
-	From      user      `json:"from"`
-	ViaBot    *user     `json:"via_bot"`
-	Location  *geoPoint `json:"location"`
- Document *telegramDocument `json:"document"`
+	MessageID int               `json:"message_id"`
+	Text      string            `json:"text"`
+	Chat      chat              `json:"chat"`
+	From      user              `json:"from"`
+	ViaBot    *user             `json:"via_bot"`
+	Location  *geoPoint         `json:"location"`
+	Document  *telegramDocument `json:"document"`
 }
 type callbackQuery struct {
 	ID              string   `json:"id"`
@@ -76,14 +77,21 @@ type callbackQuery struct {
 	InlineMessageID string   `json:"inline_message_id"`
 }
 type update struct {
-	UpdateID int64          `json:"update_id"`
-	Message  *message       `json:"message"`
-	Callback *callbackQuery `json:"callback_query"`
-	InlineQuery *inlineQuery `json:"inline_query"`
- Chosen *chosenInlineResult `json:"chosen_inline_result"`
+	UpdateID    int64               `json:"update_id"`
+	Message     *message            `json:"message"`
+	Callback    *callbackQuery      `json:"callback_query"`
+	InlineQuery *inlineQuery        `json:"inline_query"`
+	Chosen      *chosenInlineResult `json:"chosen_inline_result"`
 }
-type telegramDocument struct { FileID string `json:"file_id"`; FileName string `json:"file_name"`; FileSize int64 `json:"file_size"` }
-type chosenInlineResult struct {ResultID string `json:"result_id"`;From user `json:"from"`}
+type telegramDocument struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
+}
+type chosenInlineResult struct {
+	ResultID string `json:"result_id"`
+	From     user   `json:"from"`
+}
 type apiResult struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description"`
@@ -105,6 +113,7 @@ func startMenuMarkup(mapURL string) map[string]any {
 		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search:menu")},
 		[]Button{leadButton("menu", "")},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
+		[]Button{cabinetButton()},
 	)
 }
 
@@ -129,13 +138,17 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 	if err != nil {
 		return nil, err
 	}
- metrics, err := analytics.Open(filepath.Join(dataDir,"analytics.jsonl"))
- if err != nil {return nil,err}
- visitors, err := openVisitorStore(filepath.Join(dataDir,"visitors.json"))
- if err != nil {return nil,err}
+	metrics, err := analytics.Open(filepath.Join(dataDir, "analytics.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	visitors, err := openVisitorStore(filepath.Join(dataDir, "visitors.json"))
+	if err != nil {
+		return nil, err
+	}
 	return &Bot{
 		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
-		adminIDs: ids, leads: leads, metrics:metrics, visitors: visitors, http: &http.Client{Timeout: 50 * time.Second},
+		adminIDs: ids, leads: leads, metrics: metrics, visitors: visitors, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
 		compareSelections: make(map[int64][]string),
 	}, nil
@@ -231,7 +244,7 @@ func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64
 }
 
 func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
-	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), b.adminHomeMarkup(b.mapURL,sender.ID))
+	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), b.adminHomeMarkup(b.mapURL, sender.ID))
 }
 
 // Two columns on every page. Sort by the real station name, not "Метро" or image ID.
@@ -676,7 +689,9 @@ func compareField(label, value string) string {
 }
 
 func comparisonText(items []catalog.Location) string {
-	for i := range items { items[i] = publicLocation(items[i]) }
+	for i := range items {
+		items[i] = publicLocation(items[i])
+	}
 	var lines []string
 	lines = append(lines, "⚖️ <b>Сравнение локаций</b>")
 	for i, item := range items {
@@ -796,29 +811,36 @@ func (b *Bot) showNear(ctx context.Context, chatID int64, p *geoPoint) error {
 	return b.Send(ctx, chatID, "<b>Ближайшие локации</b> 📍\nРасстояния рассчитаны <b>по прямой</b>, а не по маршруту. Нажми на локацию, чтобы посмотреть описание и оценку.\n\nГеопозицию бот не сохраняет.", markup(rows...))
 }
 func (b *Bot) handle(ctx context.Context, u update) error {
- if u.Chosen != nil {
-  if id:=strings.TrimPrefix(u.Chosen.ResultID,"karty:"); id!=u.Chosen.ResultID {
-   b.recordLocationAnalytics(u.Chosen.From.ID,id,analytics.View)
-  }
-  return nil
- }
+	if u.Chosen != nil {
+		if id := strings.TrimPrefix(u.Chosen.ResultID, "karty:"); id != u.Chosen.ResultID {
+			b.recordLocationAnalytics(u.Chosen.From.ID, id, analytics.View)
+		}
+		return nil
+	}
 	if u.InlineQuery != nil {
 		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
 	}
 	if u.Callback != nil {
-  if u.Callback.Message != nil && u.Callback.Message.Chat.Type == "private" && u.Callback.Message.Chat.ID == u.Callback.From.ID && !strings.HasPrefix(u.Callback.Data,"adm:") {
-   b.observeVisitor(u.Callback.From,b.visitorCallbackAction(u.Callback.Data),false)
-  }
-  if strings.HasPrefix(u.Callback.Data,"lead:take:") || strings.HasPrefix(u.Callback.Data,"lead:done:") {
-    b.answerCallback(ctx,u.Callback.ID)
-    return b.handleLeadAdminCallback(ctx,u.Callback)
-  }
-  if strings.HasPrefix(u.Callback.Data,"adm:") {
-   b.answerCallback(ctx,u.Callback.ID)
-   if u.Callback.Message == nil || u.Callback.Message.Chat.Type != "private" || !b.isAdmin(u.Callback.From.ID) || u.Callback.Message.Chat.ID != u.Callback.From.ID {return nil}
-   return b.handleAdminCallback(withNavigation(ctx,u.Callback.Message.Chat.ID,u.Callback.Message.MessageID),u.Callback.From.ID,u.Callback.From,u.Callback.Data)
-  }
-  if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
+		if u.Callback.Message != nil && u.Callback.Message.Chat.Type == "private" && u.Callback.Message.Chat.ID == u.Callback.From.ID && !strings.HasPrefix(u.Callback.Data, "adm:") {
+			b.observeVisitor(u.Callback.From, b.visitorCallbackAction(u.Callback.Data), false)
+		}
+		if strings.HasPrefix(u.Callback.Data, "lead:take:") || strings.HasPrefix(u.Callback.Data, "lead:done:") {
+			b.answerCallback(ctx, u.Callback.ID)
+			return b.handleLeadAdminCallback(ctx, u.Callback)
+		}
+		if strings.HasPrefix(u.Callback.Data, "adm:") {
+			b.answerCallback(ctx, u.Callback.ID)
+			if u.Callback.Message == nil || u.Callback.Message.Chat.Type != "private" || !b.isAdmin(u.Callback.From.ID) || u.Callback.Message.Chat.ID != u.Callback.From.ID {
+				return nil
+			}
+			adminCtx := withNavigation(ctx, u.Callback.Message.Chat.ID, u.Callback.Message.MessageID)
+			if strings.HasPrefix(u.Callback.Data, "adm:case:") {
+				return b.handleCaseAdminCallback(adminCtx, u.Callback.From, u.Callback.Data)
+			}
+			b.clearResolutionSession(u.Callback.From.ID)
+			return b.handleAdminCallback(adminCtx, u.Callback.From.ID, u.Callback.From, u.Callback.Data)
+		}
+		if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
 			return b.toggleInlineFavorite(ctx, u.Callback)
 		}
 		if strings.HasPrefix(u.Callback.Data, "inline:nav:") {
@@ -838,6 +860,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			if u.Callback.InlineMessageID == "" || chatID <= 0 {
 				return nil
 			}
+			if strings.HasPrefix(u.Callback.Data, "cab:") {
+				return b.handleCabinetCallback(b.privateScreenContext(ctx, chatID), chatID, u.Callback.From, u.Callback.Data)
+			}
 			if u.Callback.Data == "favorites" {
 				return b.showFavorites(b.privateScreenContext(ctx, chatID), chatID, u.Callback.From.ID)
 			}
@@ -849,8 +874,15 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			}
 			ctx = withInlineNavigation(ctx, u.Callback.InlineMessageID)
 		}
+		if strings.HasPrefix(u.Callback.Data, "cab:") {
+			return b.handleCabinetCallback(ctx, chatID, u.Callback.From, u.Callback.Data)
+		}
 		if strings.HasPrefix(u.Callback.Data, "lead:") {
 			return b.handleLeadCallback(ctx, chatID, u.Callback.From, u.Callback.Data)
+		}
+		b.clearResolutionSession(u.Callback.From.ID)
+		if err := b.pauseClientForms(u.Callback.From.ID); err != nil {
+			return err
 		}
 		switch {
 		case u.Callback.Data == "menu":
@@ -875,8 +907,10 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 				page, _ = strconv.Atoi(parts[1])
 			}
 			err := b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
-   if err == nil {b.recordLocationAnalytics(u.Callback.From.ID,parts[0],analytics.View)}
-   return err
+			if err == nil {
+				b.recordLocationAnalytics(u.Callback.From.ID, parts[0], analytics.View)
+			}
+			return err
 		case strings.HasPrefix(u.Callback.Data, "page:"):
 			n, _ := strconv.Atoi(strings.TrimPrefix(u.Callback.Data, "page:"))
 			return b.showPage(ctx, chatID, n)
@@ -911,11 +945,13 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 				return err
 			}
 			if !added {
-    b.removeComparisonSelection(u.Callback.From.ID, parts[0])
-   }
-   kind:=analytics.FavoriteRemoved
-   if added {kind=analytics.FavoriteAdded}
-   b.recordLocationAnalytics(u.Callback.From.ID,parts[0],kind)
+				b.removeComparisonSelection(u.Callback.From.ID, parts[0])
+			}
+			kind := analytics.FavoriteRemoved
+			if added {
+				kind = analytics.FavoriteAdded
+			}
+			b.recordLocationAnalytics(u.Callback.From.ID, parts[0], kind)
 			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
 		case strings.HasPrefix(u.Callback.Data, "fav:remove:"):
 			stationID := strings.TrimPrefix(u.Callback.Data, "fav:remove:")
@@ -923,7 +959,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 				return err
 			}
 			b.removeComparisonSelection(u.Callback.From.ID, stationID)
-   b.recordLocationAnalytics(u.Callback.From.ID,stationID,analytics.FavoriteRemoved)
+			b.recordLocationAnalytics(u.Callback.From.ID, stationID, analytics.FavoriteRemoved)
 			return b.showFavorites(ctx, chatID, u.Callback.From.ID)
 		}
 		return nil
@@ -932,23 +968,31 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if m == nil || m.Chat.Type != "private" {
 		return nil
 	}
- if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
-  if err:=b.receiveAdminBackup(ctx,m.Chat.ID,m.From.ID,m.Document.FileID,m.Document.FileSize);err!=nil {
-   return b.Send(ctx,m.Chat.ID,"Не удалось загрузить архив. Проверьте формат и повторите попытку.",nil)
-  }
-  return nil
- }
- // An inline result is sent by the user via our bot. Its text already IS
+	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
+		if err := b.receiveAdminBackup(ctx, m.Chat.ID, m.From.ID, m.Document.FileID, m.Document.FileSize); err != nil {
+			return b.Send(ctx, m.Chat.ID, "Не удалось загрузить архив. Проверьте формат и повторите попытку.", nil)
+		}
+		return nil
+	}
+	// An inline result is sent by the user via our bot. Its text already IS
 	// the location card; do not treat it as a new name-search query.
 	if m.ViaBot != nil {
 		// Only clean up the prompt when this message was sent via this
 		// bot's own inline suggestions, never for another bot.
 		if b.botID > 0 && m.ViaBot.ID == b.botID {
+			if err := b.pauseClientForms(m.From.ID); err != nil {
+				return err
+			}
+			b.clearResolutionSession(m.From.ID)
 			b.clearSelectedSearchPrompt(ctx, m.Chat.ID)
 		}
 		return nil
 	}
 	if m.Location != nil {
+		if err := b.pauseClientForms(m.From.ID); err != nil {
+			return err
+		}
+		b.clearResolutionSession(m.From.ID)
 		// Keep the native location-sharing button available for the next search.
 		return b.showNear(ctx, m.Chat.ID, m.Location)
 	}
@@ -957,29 +1001,48 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if input == "" {
 		return nil
 	}
- // Track navigation labels, never store raw user-entered text or phone numbers.
- cmdForVisitor:=strings.SplitN(strings.ToLower(input)," ",2)[0]
- if cmdForVisitor=="/start" || strings.HasPrefix(cmdForVisitor,"/start@") {
-  b.observeVisitor(m.From,"Главное меню",true)
- } else if strings.HasPrefix(input,"/") {
-  switch cmdForVisitor{
-   case "/list":b.observeVisitor(m.From,"Список локаций",false)
-   case "/favorites":b.observeVisitor(m.From,"Избранное",false)
-   case "/near":b.observeVisitor(m.From,"Рядом со мной",false)
-   case "/map":b.observeVisitor(m.From,"Карта локаций",false)
-   case "/compare":b.observeVisitor(m.From,"Сравнение локаций",false)
-  }
- } else {
-  label:="Поиск локации"
-  if b.leads!=nil {if _,draft:=b.leads.draft(m.From.ID);draft{label="Форма заявки"}}
-  switch input {
-   case "📋 Список локаций","📋 Список станций":label="Список локаций"
-   case "⭐ Избранное":label="Избранное"
-   case "📝 Оставить заявку":label="Форма заявки"
-   case "🏠 Главное меню":label="Главное меню"
-  }
-  b.observeVisitor(m.From,label,false)
- }
+	// Track navigation labels, never store raw user-entered text or phone numbers.
+	cmdForVisitor := strings.SplitN(strings.ToLower(input), " ", 2)[0]
+	if cmdForVisitor == "/start" || strings.HasPrefix(cmdForVisitor, "/start@") {
+		b.observeVisitor(m.From, "Главное меню", true)
+	} else if strings.HasPrefix(input, "/") {
+		switch cmdForVisitor {
+		case "/list":
+			b.observeVisitor(m.From, "Список локаций", false)
+		case "/favorites":
+			b.observeVisitor(m.From, "Избранное", false)
+		case "/near":
+			b.observeVisitor(m.From, "Рядом со мной", false)
+		case "/map":
+			b.observeVisitor(m.From, "Карта локаций", false)
+		case "/compare":
+			b.observeVisitor(m.From, "Сравнение локаций", false)
+		}
+	} else {
+		label := "Поиск локации"
+		if b.leads != nil {
+			if _, draft := b.leads.draft(m.From.ID); draft {
+				label = "Форма заявки"
+			}
+		}
+		switch input {
+		case "📋 Список локаций", "📋 Список станций":
+			label = "Список локаций"
+		case "⭐ Избранное":
+			label = "Избранное"
+		case "📝 Оставить заявку":
+			label = "Форма заявки"
+		case "🏠 Главное меню":
+			label = "Главное меню"
+		}
+		b.observeVisitor(m.From, label, false)
+	}
+	if input == "🏠 Главное меню" || input == "📋 Список локаций" || input == "📋 Список станций" || input == "🔎 Поиск локации" || input == "🔎 Поиск" || input == "📍 Рядом со мной" || input == "⭐ Избранное" || input == "🗺 Карта локаций" || input == "⚖️ Сравнить локации" {
+		if err := b.pauseClientForms(m.From.ID); err != nil {
+			return err
+		}
+		b.clearResolutionSession(m.From.ID)
+	}
 	switch input {
 	case "📋 Список локаций", "📋 Список станций":
 		return b.showPage(ctx, chatID, 0)
@@ -997,6 +1060,12 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.welcome(ctx, chatID, m.From)
 	case "📝 Оставить заявку":
 		return b.openLead(ctx, chatID, m.From.ID, "menu", "")
+	}
+	if strings.HasPrefix(input, "/") {
+		if err := b.pauseClientForms(m.From.ID); err != nil {
+			return err
+		}
+		b.clearResolutionSession(m.From.ID)
 	}
 	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
 	if at := strings.IndexByte(cmd, '@'); at >= 0 {
@@ -1018,9 +1087,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	case "/id":
 		return b.Send(ctx, chatID, fmt.Sprintf("Твой Telegram ID: <code>%d</code>", m.From.ID), nil)
 	case "/admin":
-   if !b.isAdmin(m.From.ID) {return b.Send(ctx,chatID,"Нет доступа к админ-панели.",nil)}
-   return b.showAdminMenu(ctx,chatID)
- case "/applications":
+		if !b.isAdmin(m.From.ID) {
+			return b.Send(ctx, chatID, "Нет доступа к админ-панели.", nil)
+		}
+		return b.showAdminMenu(ctx, chatID)
+	case "/applications":
 		if !b.adminIDs[m.From.ID] {
 			return b.Send(ctx, chatID, "Доступно только администратору.", nil)
 		}
@@ -1071,8 +1142,16 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if strings.HasPrefix(cmd, "/") {
 		return b.Send(ctx, chatID, "Неизвестная команда. /help", nil)
 	}
-	if handled,err:=b.handleAdminText(ctx,chatID,m.From,input);handled{return err}
- if handled, err := b.handleLeadText(ctx, chatID, m.From, input); handled {
+	if handled, err := b.handleResolutionText(ctx, chatID, m.From, input); handled {
+		return err
+	}
+	if handled, err := b.handleAdminText(ctx, chatID, m.From, input); handled {
+		return err
+	}
+	if handled, err := b.handleSupplementText(ctx, chatID, m.From, input); handled {
+		return err
+	}
+	if handled, err := b.handleLeadText(ctx, chatID, m.From, input); handled {
 		return err
 	}
 	if mapInput, ok := sharedMapInput(input); ok {
@@ -1090,9 +1169,11 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.Send(ctx, chatID, "По запросу <b>"+html.EscapeString(input)+"</b> ничего не найдено. Попробуй часть названия.", nil)
 	}
 	if len(found) == 1 {
-		err:=b.showLocation(ctx, chatID, m.From.ID, found[0].ID, 0)
-  if err==nil{b.recordLocationAnalytics(m.From.ID,found[0].ID,analytics.View)}
-  return err
+		err := b.showLocation(ctx, chatID, m.From.ID, found[0].ID, 0)
+		if err == nil {
+			b.recordLocationAnalytics(m.From.ID, found[0].ID, analytics.View)
+		}
+		return err
 	}
 	found = sortedStations(found)
 	rows := [][]Button{}
@@ -1132,8 +1213,8 @@ func (b *Bot) Run(ctx context.Context) error {
 		b.botID = identity.ID
 	}
 	b.startLeadDeliveryRetry(ctx)
- go b.autoBackupLoop(ctx)
- go b.visitorMonitor(ctx)
+	go b.autoBackupLoop(ctx)
+	go b.visitorMonitor(ctx)
 	// Only /start is shown in Telegram's command picker. All other
 	// user and administrator workflows remain accessible through bot buttons.
 	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{

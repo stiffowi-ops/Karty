@@ -23,6 +23,10 @@ import (
 )
 
 type adminSession struct {
+	ResolveLead      int64
+	ResolveVersion   int
+	ResolveSummary   string
+	ResolveToken     string
 	LocationID       string
 	OriginalHash     string
 	Draft            catalog.CardRevision
@@ -38,11 +42,11 @@ type adminSession struct {
 	RestoreIndex     int
 	RestoreHash      string
 	CreatingLocation bool
- CleanupKind string
- CleanupTrash bool
- CleanupPage int
- CleanupSelected map[int64]bool
- CleanupAction string
+	CleanupKind      string
+	CleanupTrash     bool
+	CleanupPage      int
+	CleanupSelected  map[int64]bool
+	CleanupAction    string
 }
 type adminRevisionEvent struct {
 	At         time.Time            `json:"at"`
@@ -96,14 +100,30 @@ func (b *Bot) showAdminTools(ctx context.Context, chatID int64) error {
 	))
 }
 func (b *Bot) adminLeadCount() int {
-	if b.leads == nil {return 0}
+	if b.leads == nil {
+		return 0
+	}
 	return len(b.leads.visibleSubmitted())
 }
 func (b *Bot) adminLeadDates() map[string][]time.Time {
-	result:=map[string][]time.Time{}
-	if b.leads == nil {return result}
-	for _,app:=range b.leads.visibleSubmitted() {
-		if app.LocationID!="" {result[app.LocationID]=append(result[app.LocationID],app.CreatedAt)}
+	result := map[string][]time.Time{}
+	if b.leads == nil {
+		return result
+	}
+	for _, app := range b.leads.visibleSubmitted() {
+		for _, loc := range app.locations() {
+			at := app.CreatedAt
+			for _, u := range app.Updates {
+				for _, added := range u.Locations {
+					if added.ID == loc.ID {
+						at = u.CreatedAt
+					}
+				}
+			}
+			if loc.ID != "" {
+				result[loc.ID] = append(result[loc.ID], at)
+			}
+		}
 	}
 	return result
 }
@@ -940,9 +960,11 @@ func (b *Bot) restoreAdminBackup(ctx context.Context, chatID, userID int64, mode
 					return e
 				}
 				if b.visitors != nil {
-					v,e:=openVisitorStore(filepath.Join(b.store.DataDir(),"visitors.json"))
-					if e!=nil{return e}
-					b.visitors.users=v.users
+					v, e := openVisitorStore(filepath.Join(b.store.DataDir(), "visitors.json"))
+					if e != nil {
+						return e
+					}
+					b.visitors.users = v.users
 				}
 			}
 			return nil
@@ -974,28 +996,52 @@ func (b *Bot) reloadLeadsAfterRestore() error {
 }
 
 func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, data string) error {
+	if strings.HasPrefix(data, "adm:visitorfavs:") {
+		if !b.isAdmin(from.ID) || chatID != from.ID {
+			return nil
+		}
+		parts := strings.Split(data, ":")
+		if len(parts) != 4 {
+			return nil
+		}
+		id, err := strconv.ParseInt(parts[2], 10, 64)
+		page, e := strconv.Atoi(parts[3])
+		if err != nil || e != nil || id <= 0 {
+			return nil
+		}
+		return b.showVisitorFavorites(ctx, chatID, id, page)
+	}
+
 	if !b.isAdmin(from.ID) || chatID != from.ID {
 		return nil
 	}
 	session := b.adminSession(from.ID)
- if handled,err:=b.handleAdminCleanup(ctx,chatID,from.ID,data);handled{return err}
+	if handled, err := b.handleAdminCleanup(ctx, chatID, from.ID, data); handled {
+		return err
+	}
 	parts := strings.Split(data, ":")
 	switch {
 	case data == "adm:menu":
 		session.Field = ""
 		return b.showAdminMenu(ctx, chatID)
 	case data == "adm:visitors":
-		return b.showVisitors(ctx,chatID)
-	case strings.HasPrefix(data,"adm:visitors:"):
-		p:=strings.Split(data,":")
-		if len(p)!=4{return b.showVisitors(ctx,chatID)}
-		page,err:=strconv.Atoi(p[3])
-		if err!=nil{return b.showVisitors(ctx,chatID)}
-		return b.showVisitorsPage(ctx,chatID,p[2],page)
-	case strings.HasPrefix(data,"adm:visitor:"):
-		id,err:=strconv.ParseInt(strings.TrimPrefix(data,"adm:visitor:"),10,64)
-		if err!=nil || id<=0{return b.showVisitors(ctx,chatID)}
-		return b.showVisitor(ctx,chatID,id)
+		return b.showVisitors(ctx, chatID)
+	case strings.HasPrefix(data, "adm:visitors:"):
+		p := strings.Split(data, ":")
+		if len(p) != 4 {
+			return b.showVisitors(ctx, chatID)
+		}
+		page, err := strconv.Atoi(p[3])
+		if err != nil {
+			return b.showVisitors(ctx, chatID)
+		}
+		return b.showVisitorsPage(ctx, chatID, p[2], page)
+	case strings.HasPrefix(data, "adm:visitor:"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(data, "adm:visitor:"), 10, 64)
+		if err != nil || id <= 0 {
+			return b.showVisitors(ctx, chatID)
+		}
+		return b.showVisitor(ctx, chatID, id)
 	case data == "adm:backup":
 		session.Field = ""
 		session.AwaitingBackup = false
@@ -1074,15 +1120,18 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		return b.showLocationInsights(ctx, chatID, parts[2], days)
 	case data == "adm:leads":
 		return b.showAdminLeads(ctx, chatID)
-	case strings.HasPrefix(data,"adm:leadtake:"):
-		number,err:=strconv.ParseInt(strings.TrimPrefix(data,"adm:leadtake:"),10,64)
-		if err!=nil || number<=0{return b.showAdminLeads(ctx,chatID)}
-		lead,_,err:=b.leads.takeInWork(number,from.ID)
-		if err!=nil {
-			return b.Send(ctx,chatID,"Не удалось изменить статус заявки: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("⬅️ К заявкам","adm:leads")}))
+	case strings.HasPrefix(data, "adm:leadtake:"):
+		number, err := strconv.ParseInt(strings.TrimPrefix(data, "adm:leadtake:"), 10, 64)
+		if err != nil || number <= 0 {
+			return b.showAdminLeads(ctx, chatID)
 		}
-		b.refreshLeadAdminMessages(ctx,lead)
-		return b.showAdminLeads(ctx,chatID)
+		lead, _, err := b.leads.takeInWork(number, from.ID)
+		if err != nil {
+			return b.Send(ctx, chatID, "Не удалось изменить статус заявки: "+html.EscapeString(err.Error()), markup([]Button{callbackButton("⬅️ К заявкам", "adm:leads")}))
+		}
+		b.refreshLeadAdminMessages(ctx, lead)
+		b.notifyCaseEvents(ctx, time.Now().UTC())
+		return b.showAdminLeads(ctx, chatID)
 	case data == "adm:tools":
 		return b.showAdminTools(ctx, chatID)
 	case data == "adm:reload":

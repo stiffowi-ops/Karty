@@ -213,6 +213,7 @@ func (b *Bot) visitorCallbackAction(data string) string {
  case data=="search" || strings.HasPrefix(data,"search:"):return "Поиск локации"
  case strings.HasPrefix(data,"compare:"):return "Сравнение локаций"
  case strings.HasPrefix(data,"lead:"):return "Форма заявки"
+ case strings.HasPrefix(data,"cab:"):return "Мои заявки"
  case strings.HasPrefix(data,"loc:"):
   id:=strings.Split(strings.TrimPrefix(data,"loc:"),":")[0]
   if b.store!=nil{if l,ok:=b.store.Find(id);ok{return "Карточка: "+limitRunes(publicText(l.Title),65)}}
@@ -267,7 +268,7 @@ func (b *Bot) sendVisitorAlerts(ctx context.Context,now time.Time) {
  for id:=range b.adminIDs{admins=append(admins,id)}
  sort.Slice(admins,func(i,j int)bool{return admins[i]<admins[j]})
  for _,candidate:=range b.visitors.due(now) {
-  if b.isPermanentlyDeletedVisitor(candidate.UserID){continue}
+  if b.isAdmin(candidate.UserID)||b.isPermanentlyDeletedVisitor(candidate.UserID){continue}
   if b.visitorHasApplication(candidate.UserID) {
    if err:=b.visitors.markLead(candidate.UserID);err!=nil{log.Printf("visitor lead state: %v",err)}
    continue
@@ -280,11 +281,11 @@ func (b *Bot) sendVisitorAlerts(ctx context.Context,now time.Time) {
    fresh,ok=b.visitors.find(candidate.UserID)
    if !ok || fresh.Hidden || fresh.HasLead || fresh.Alerted{break}
    if fresh.AlertRecipients[strconv.FormatInt(adminID,10)]{continue}
-   message:="🔔 <b>Посетитель без заявки · прошло 60 минут</b>\n\n"+visitorHTML(fresh,now)
+   message:=b.visitorAlertHTML(fresh,now,b.visitorFavorites(fresh.UserID))
    _,err:=b.call(ctx,"sendMessage",map[string]any{
     "chat_id":adminID,"text":message,"parse_mode":"HTML",
     "link_preview_options":map[string]any{"is_disabled":true},
-    "reply_markup":visitorKeyboard(fresh),
+    "reply_markup":b.visitorAlertKeyboard(fresh),
    })
    if err!=nil{log.Printf("Visitor %d alert admin %d: %v",fresh.UserID,adminID,err);continue}
    if err:=b.visitors.noteAlertRecipient(fresh.UserID,adminID,admins);err!=nil {
@@ -359,6 +360,7 @@ func (b *Bot) showVisitor(ctx context.Context,chatID,userID int64) error {
  }
  return b.Send(ctx,chatID,visitorHTML(p,time.Now()),markup(
   []Button{urlButton("👤 Открыть профиль",visitorProfileURL(p))},
+  []Button{callbackButton("⭐ Избранные локации",fmt.Sprintf("adm:visitorfavs:%d:0",userID))},
   []Button{callbackButton("🗑 Скрыть запись",fmt.Sprintf("adm:clean:one:v:%d",userID))},
   []Button{callbackButton("⬅️ Посетители","adm:visitors")},
  ))
@@ -406,3 +408,4 @@ func (v *visitorStore) eraseHidden(ids []int64) error {
  if err:=v.saveLocked();err!=nil{v.users=prior;return err}
  return nil
 }
+

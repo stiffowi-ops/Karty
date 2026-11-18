@@ -36,6 +36,23 @@ func caseButton(title string, n int64) Button {
 	return callbackButton(title, fmt.Sprintf("cab:view:%d", n))
 }
 func caseTime(at time.Time) string { return at.In(visitTZ).Format("02.01.2006 15:04") + " МСК" }
+func supplementUsageText(l leadApplication) string {
+	used := len(l.Updates)
+	if used > maxCaseSupplements {
+		used = maxCaseSupplements
+	}
+	text := fmt.Sprintf("➕ Дополнения: %d из %d использовано.", used, maxCaseSupplements)
+	if !l.isResolved() && len(l.Updates) > 0 {
+		latest := l.Updates[len(l.Updates)-1]
+		if latest.AcceptedAt == nil {
+			text += "\n⏳ Последнее дополнение ожидает принятия специалистом."
+		} else {
+			text += "\n✅ Последнее дополнение принято специалистом."
+		}
+	}
+	return text
+}
+
 func locationLines(locations []leadLocation) string {
 	var out strings.Builder
 	for _, l := range locations {
@@ -53,7 +70,7 @@ func (b *Bot) showCabinet(ctx context.Context, chatID, userID int64) error {
 	text := "📋 <b>Мои заявки</b>\n\nЗдесь Вы можете проверить статус обращения, добавить интересующие локации или отправить уточнение. Предыдущие заявки всегда доступны в истории."
 	rows := [][]Button{}
 	if l, ok := b.leads.submitted(userID); ok && !l.isResolved() {
-		text += fmt.Sprintf("\n\n<b>Активное обращение №%04d</b>\n%s\nЛокаций: %d", l.Number, leadStatus(l), len(l.locations()))
+		text += fmt.Sprintf("\n\n<b>Активное обращение №%04d</b>\n%s\nЛокаций: %d\n%s", l.Number, leadStatus(l), len(l.locations()), supplementUsageText(l))
 		if l.supplementLimitReached() {
 			text += "\n" + supplementLimitText
 		}
@@ -84,7 +101,7 @@ func (b *Bot) showClientCase(ctx context.Context, chatID, userID, number int64) 
 	}
 	active, hasActive := b.leads.submitted(userID)
 	editable := hasActive && active.Number == number && !l.isResolved()
-	text := fmt.Sprintf("📂 <b>Обращение №%04d</b>\n%s\nПолучено: %s\n\n<b>Интересующие локации</b>\n%s", l.Number, leadStatus(l), caseTime(l.CreatedAt), locationLines(l.locations()))
+	text := fmt.Sprintf("📂 <b>Обращение №%04d</b>\n%s\nПолучено: %s\n%s\n\n<b>Интересующие локации</b>\n%s", l.Number, leadStatus(l), caseTime(l.CreatedAt), supplementUsageText(l), locationLines(l.locations()))
 	if l.TakenAt != nil {
 		text += "\nВ работе с " + caseTime(*l.TakenAt) + ".\n"
 	}
@@ -190,11 +207,47 @@ func caseEvents(l leadApplication) []caseEvent {
 }
 func (b *Bot) showCaseTimeline(ctx context.Context, chatID int64, l leadApplication, page int, admin bool) error {
 	events := caseEvents(l)
-	pages := max(1, len(events))
+	if !admin {
+		// Clients see the lifecycle in chronological order, with several short
+		// events together rather than one event per page.
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
+	// Group by approximate message size as well as event count. A single
+	// long legacy event stays intact and gets its own page.
+	var chunks [][]caseEvent
+	if admin {
+		for _, event := range events {
+			chunks = append(chunks, []caseEvent{event})
+		}
+	} else {
+		var chunk []caseEvent
+		length := 0
+		for _, event := range events {
+			line := "\n<b>" + caseTime(event.at) + "</b>\n" + event.text + "\n"
+			if len(chunk) > 0 && (len(chunk) >= 4 || length+utf16Len(line) > 3500) {
+				chunks = append(chunks, chunk)
+				chunk = nil
+				length = 0
+			}
+			chunk = append(chunk, event)
+			length += utf16Len(line)
+		}
+		if len(chunk) > 0 {
+			chunks = append(chunks, chunk)
+		}
+	}
+	pages := max(1, len(chunks))
 	page = max(0, min(page, pages-1))
 	text := fmt.Sprintf("🕓 <b>История обращения №%04d</b>\nСтраница %d/%d\n", l.Number, page+1, pages)
-	for _, e := range events[page:min(page+1, len(events))] {
-		text += "\n<b>" + caseTime(e.at) + "</b>\n" + e.text + "\n"
+	if !admin {
+		text = fmt.Sprintf("🕓 <b>История обращения №%04d</b>\nСобытия по порядку · Страница %d/%d\n", l.Number, page+1, pages)
+	}
+	if len(chunks) > 0 {
+		for _, e := range chunks[page] {
+			text += "\n<b>" + caseTime(e.at) + "</b>\n" + e.text + "\n"
+		}
 	}
 	prefix := "cab:timeline"
 	back := caseButton("⬅️ К обращению", l.Number)

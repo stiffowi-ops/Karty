@@ -113,7 +113,7 @@ func startMenuMarkup(mapURL string) map[string]any {
 		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search:menu")},
 		[]Button{leadButton("menu", "")},
 		[]Button{callbackButton("📍 Рядом со мной", "near")},
-		[]Button{callbackButton("👤 Личный кабинет", "cab:home")},
+		[]Button{cabinetButton()},
 	)
 }
 

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func cabinetButton() Button { return callbackButton("👤 Личный кабинет", "cab:home") }
+func cabinetButton() Button { return callbackButton("📋 Мои заявки", "cab:home") }
 func caseButton(title string, n int64) Button {
 	return callbackButton(title, fmt.Sprintf("cab:view:%d", n))
 }
@@ -24,12 +24,12 @@ func locationLines(locations []leadLocation) string {
 }
 func (b *Bot) showCabinet(ctx context.Context, chatID, userID int64) error {
 	if chatID != userID || b.leads == nil {
-		return b.Send(ctx, chatID, "Личный кабинет временно недоступен.", homeMarkup())
+		return b.Send(ctx, chatID, "Раздел «Мои заявки» временно недоступен.", homeMarkup())
 	}
 	if err := b.pauseClientForms(userID); err != nil {
 		return err
 	}
-	text := "👤 <b>Личный кабинет</b>\n\nЗдесь можно проверить статус обращения, дополнить его и посмотреть историю."
+	text := "📋 <b>Мои заявки</b>\n\nЗдесь можно проверить статус обращения, дополнить его и посмотреть историю."
 	rows := [][]Button{}
 	if l, ok := b.leads.submitted(userID); ok && !l.isResolved() {
 		text += fmt.Sprintf("\n\n<b>Активное обращение №%04d</b>\n%s\nЛокаций: %d", l.Number, leadStatus(l), len(l.locations()))
@@ -83,7 +83,7 @@ func (b *Bot) showClientCase(ctx context.Context, chatID, userID, number int64) 
 	if editable {
 		rows = append(rows, []Button{callbackButton("➕ Добавить локацию", fmt.Sprintf("cab:add:%d", number))}, []Button{callbackButton("💬 Написать уточнение", fmt.Sprintf("cab:comment:%d", number))})
 	} else if !l.isResolved() {
-		text += "\nЭто предыдущее обращение из архива. Для дополнений откройте текущее обращение в личном кабинете."
+		text += "\nЭто предыдущее обращение из архива. Для дополнений откройте текущую заявку в разделе «Мои заявки»."
 	}
 	rows = append(rows, []Button{callbackButton("🕓 История этого обращения", fmt.Sprintf("cab:timeline:%d:0", number))})
 	if l.isResolved() && (!hasActive || active.isResolved()) {
@@ -296,7 +296,7 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 		return nil
 	}
 	if b.leads == nil {
-		return b.Send(ctx, chatID, "Личный кабинет временно недоступен.", homeMarkup())
+		return b.Send(ctx, chatID, "Раздел «Мои заявки» временно недоступен.", homeMarkup())
 	}
 	b.clearResolutionSession(from.ID)
 	p := strings.Split(data, ":")
@@ -358,7 +358,7 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 		}
 		text := "Это дополнение уже отправлено."
 		if changed {
-			text = "✅ Дополнение сохранено и передано специалисту. Его принятие появится в личном кабинете."
+			text = "✅ Дополнение сохранено и передано специалисту. Статус дополнения можно проверить в разделе «Мои заявки»."
 		}
 		replyErr := b.Send(ctx, chatID, text, markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 		b.refreshLeadAdminMessages(ctx, l)

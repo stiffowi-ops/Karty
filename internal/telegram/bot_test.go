@@ -424,7 +424,7 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search:menu")
 	assertButton(2, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
 	assertButton(3, 0, "📍 Рядом со мной", "callback_data", "near")
-	assertButton(4, 0, "👤 Личный кабинет", "callback_data", "cab:home")
+	assertButton(4, 0, "📋 Мои заявки", "callback_data", "cab:home")
 	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
 		t.Fatalf("temporary reset message not deleted: %+v", tr.requests)
 	}

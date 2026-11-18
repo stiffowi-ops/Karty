@@ -180,7 +180,7 @@ func (b *Bot) notifyCaseEvents(ctx context.Context, now time.Time) {
 			continue
 		}
 		if l.TakenInWork && !l.isResolved() {
-			send(l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\nСтатус и возможность дополнить обращение доступны в личном кабинете.", l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
+			send(l, "client:taken", l.UserID, fmt.Sprintf("🛠 <b>Ваше обращение №%04d взято в работу.</b>\n\nСтатус и возможность дополнить обращение доступны в разделе «Мои заявки».", l.Number), markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
 		}
 		for _, u := range l.Updates {
 			if u.AcceptedAt != nil {
@@ -196,7 +196,7 @@ func (b *Bot) notifyCaseEvents(ctx context.Context, now time.Time) {
 			b.notifySupplementReminder(l, u, reminderClock(), send)
 		}
 		if l.isResolved() {
-			send(l, "client:resolved", l.UserID, fmt.Sprintf("✅ <b>Обращение №%04d решено.</b>\n\n<b>Итог</b>\n%s\n\nИстория сохранена в личном кабинете.", l.Number, html.EscapeString(l.Resolution)), markup([]Button{caseButton("📂 Посмотреть обращение", l.Number), cabinetButton()}))
+			send(l, "client:resolved", l.UserID, fmt.Sprintf("✅ <b>Обращение №%04d решено.</b>\n\n<b>Итог</b>\n%s\n\nИстория сохранена в разделе «Мои заявки».", l.Number, html.EscapeString(l.Resolution)), markup([]Button{caseButton("📂 Посмотреть обращение", l.Number), cabinetButton()}))
 		}
 	}
 }

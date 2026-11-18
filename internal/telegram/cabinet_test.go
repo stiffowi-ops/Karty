@@ -217,6 +217,7 @@ func TestCabinetGroupedSupplementAndOwnership(t *testing.T) {
 	if len(got.Updates) != 1 || len(got.locations()) != 3 {
 		t.Fatalf("grouped update failed %+v", got)
 	}
+	b.processLeadDeliveries(ctx)
 	alerts := 0
 	for _, p := range tr.payloads {
 		if text, _ := p["text"].(string); strings.Contains(text, "🔔 Дополнение к заявке") {

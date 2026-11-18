@@ -32,7 +32,7 @@ func TestFavoriteStorePersistsPerTelegramUser(t *testing.T) {
 	if got := reloaded.IDs(101); !reflect.DeepEqual(got, []string{"002"}) {
 		t.Fatalf("favorites did not survive reload: %v", got)
 	}
-	if err := reloaded.Remove(101, "002"); err != nil {
+	if _, err := reloaded.Remove(101, "002"); err != nil {
 		t.Fatal(err)
 	}
 	if got := reloaded.IDs(101); len(got) != 0 {

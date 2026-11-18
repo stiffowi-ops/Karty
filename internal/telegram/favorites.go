@@ -97,12 +97,12 @@ func (s *favoriteStore) Toggle(userID int64, stationID string) (bool, error) {
 	return added, s.commitUserLocked(key, nextIDs)
 }
 
-func (s *favoriteStore) Remove(userID int64, stationID string) error {
+func (s *favoriteStore) Remove(userID int64, stationID string) (bool, error) {
 	if s == nil {
-		return errors.New("favorites are not initialized")
+		return false, errors.New("favorites are not initialized")
 	}
 	if userID <= 0 || !catalog.ValidID(stationID) {
-		return errors.New("invalid user or station ID")
+		return false, errors.New("invalid user or station ID")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,7 +114,13 @@ func (s *favoriteStore) Remove(userID int64, stationID string) error {
 			nextIDs = append(nextIDs, id)
 		}
 	}
-	return s.commitUserLocked(key, nextIDs)
+	if len(nextIDs) == len(current) {
+		return false, nil
+	}
+	if err := s.commitUserLocked(key, nextIDs); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *favoriteStore) commitUserLocked(key string, ids []string) error {

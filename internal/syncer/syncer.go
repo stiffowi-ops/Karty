@@ -186,9 +186,24 @@ func (s *Syncer) download(ctx context.Context, item diskItem, id, ext string) er
 	}
 	return os.Rename(f.Name(), filepath.Join(imgdir, id+ext))
 }
+
+var ErrBusy = errors.New("catalog sync is already running")
+
+func (s *Syncer) TryRun(ctx context.Context) (Result, error) {
+	if !s.mu.TryLock() {
+		return Result{}, ErrBusy
+	}
+	defer s.mu.Unlock()
+	return s.run(ctx)
+}
+
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.run(ctx)
+}
+
+func (s *Syncer) run(ctx context.Context) (Result, error) {
 	result := Result{}
 	items, err := s.list(ctx)
 	if err != nil {

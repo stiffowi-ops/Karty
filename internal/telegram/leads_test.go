@@ -135,6 +135,7 @@ func TestLeadFlowFromCardAndNotifyEveryAdmin(t *testing.T) {
 	if len(b.leads.allSubmitted()) != 1 {
 		t.Fatal("second application was created")
 	}
+	b.processLeadDeliveries(ctx)
 	l, _ := b.leads.submitted(u.ID)
 	if !l.Delivered["200"] || !l.Delivered["300"] {
 		t.Fatalf("some admins not notified: %+v", l.Delivered)

@@ -61,6 +61,9 @@ func supplementAdminText(l leadApplication, u leadUpdate, stage string) string {
 // Successful deliveries are durably acknowledged per event, stage and recipient.
 // The mutex serializes the polling retry and interactive request handlers.
 func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key string, chatID int64, text string, keyboard any, reminderClock func() time.Time) {
+	if ctx.Err() != nil || l.NoticeReceipts[key] {
+		return
+	}
 	latest, exists := b.leads.byNumber(l.Number)
 	if !exists || latest.Hidden || latest.NoticeReceipts[key] {
 		return
@@ -73,6 +76,12 @@ func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key stri
 		id, e := strconv.Atoi(parts[1])
 		if e != nil || id <= 0 || id > len(latest.Updates) || latest.Updates[id-1].AcceptedAt != nil || latest.isResolved() {
 			return
+		}
+		if latest.TakenInWork && b.adminIDs[latest.TakenBy] {
+			owner := latest.TakenBy == chatID
+			if (parts[2] == "escalation" && owner) || (parts[2] != "escalation" && !owner) {
+				return
+			}
 		}
 	}
 	if strings.HasPrefix(key, "case:") {
@@ -165,6 +174,10 @@ func (b *Bot) notifyCaseEvents(ctx context.Context, now time.Time) {
 	if b.leads == nil {
 		return
 	}
+	b.notifySelectedCaseEvents(ctx, now, b.leads.visibleSubmitted())
+}
+
+func (b *Bot) notifySelectedCaseEvents(ctx context.Context, now time.Time, cases []leadApplication) {
 	startedAt := time.Now()
 	b.leadNotifyMu.Lock()
 	defer b.leadNotifyMu.Unlock()
@@ -174,7 +187,7 @@ func (b *Bot) notifyCaseEvents(ctx context.Context, now time.Time) {
 	send := caseNoticeSender(func(l leadApplication, key string, id int64, text string, keyboard any) {
 		b.deliverCaseNotice(ctx, l, key, id, text, keyboard, reminderClock)
 	})
-	for _, l := range b.leads.visibleSubmitted() {
+	for _, l := range cases {
 		b.notifyPendingCaseReminder(l, reminderClock(), send)
 		if l.ServiceVersion == 0 {
 			continue

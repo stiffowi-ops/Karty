@@ -31,3 +31,33 @@ func TestViewsAndFavoritesPersistAndRank(t *testing.T) {
 		t.Fatalf("events not persisted: %d", len(s2.Snapshot()))
 	}
 }
+
+func TestRapidRepeatAfterBusyIntervalAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "analytics.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	if err := s.Record(1, "001", View, at); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 260; i++ {
+		if err := s.Record(int64(i+2), "002", FavoriteAdded, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, delay := range []time.Duration{time.Second, 20 * time.Second, 21 * time.Second} {
+		if err := s.Record(1, "001", View, at.Add(delay)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := s.Rankings(at.Add(time.Minute), 7, "views", []string{"001"}, nil, nil)[0]
+	if got.Views != 2 || got.UniqueViews != 1 {
+		t.Fatalf("busy interval inflated repeated views: %+v", got)
+	}
+}

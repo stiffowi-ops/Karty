@@ -125,6 +125,7 @@ func TestLeadAdminButtonAndCallbackAuthorization(t *testing.T) {
 	if err := b.handle(context.Background(), update{Callback: authorized}); err != nil {
 		t.Fatal(err)
 	}
+	b.processLeadDeliveries(context.Background())
 	current, _ := b.leads.submitted(100)
 	if !current.TakenInWork || current.TakenBy != 200 {
 		t.Fatalf("admin claim not persisted %+v", current)

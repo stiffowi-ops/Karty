@@ -6,7 +6,6 @@ import (
 	"html"
 	"strconv"
 	"strings"
-	"time"
 )
 
 func (b *Bot) clearResolutionSession(adminID int64) {
@@ -109,9 +108,7 @@ func (b *Bot) handleCaseAdminCallback(ctx context.Context, from user, data strin
 		if err != nil {
 			return b.Send(ctx, from.ID, html.EscapeString(err.Error()), markup([]Button{adminCaseButton(number)}))
 		}
-		b.refreshLeadAdminMessages(ctx, updated)
-		b.refreshSupplementMessages(ctx, updated)
-		b.notifyCaseEvents(ctx, time.Now().UTC())
+		b.queueLeadDelivery(updated.Number)
 		return b.showAdminCase(ctx, from.ID, number, 0)
 	case "resolve":
 		b.clearResolutionSession(from.ID)
@@ -148,8 +145,7 @@ func (b *Bot) handleCaseAdminCallback(ctx context.Context, from user, data strin
 		if err != nil {
 			return b.Send(ctx, from.ID, html.EscapeString(err.Error()), markup([]Button{adminCaseButton(number)}))
 		}
-		b.refreshLeadAdminMessages(ctx, updated)
-		b.notifyCaseEvents(ctx, time.Now().UTC())
+		b.queueLeadDelivery(updated.Number)
 		return b.showAdminCase(ctx, from.ID, number, 0)
 	}
 	return nil

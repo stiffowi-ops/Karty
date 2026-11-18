@@ -495,7 +495,7 @@ func (b *Bot) submitLead(ctx context.Context, chatID int64, from user, d leadDra
 	// Persisted once, deliver individually to every ADMIN_IDS recipient.
 	// The customer confirmation is sent first so slow Telegram admin chats
 	// do not hold up the visible success response.
-	b.notifyLeadAdmins(ctx, submitted)
+	b.queueLeadDelivery(submitted.Number)
 	return replyErr
 }
 
@@ -561,7 +561,9 @@ func (b *Bot) notifyLeadAdmins(ctx context.Context, lead leadApplication) {
 	defer b.leadNotifyMu.Unlock()
 	ids := make([]int64, 0, len(b.adminIDs))
 	for id := range b.adminIDs {
-		ids = append(ids, id)
+		if !lead.Delivered[strconv.FormatInt(id, 10)] {
+			ids = append(ids, id)
+		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
@@ -618,8 +620,7 @@ func (b *Bot) handleLeadAdminCallback(ctx context.Context, cb *callbackQuery) er
 	if !ok {
 		return nil
 	}
-	b.refreshLeadAdminMessages(ctx, lead)
-	b.notifyCaseEvents(ctx, time.Now().UTC())
+	b.queueLeadDelivery(lead.Number)
 	key := strconv.FormatInt(cb.From.ID, 10)
 	if lead.AdminMessages[key] != cb.Message.MessageID {
 		// Old notifications predate persistent message-ID tracking.
@@ -696,22 +697,4 @@ func (b *Bot) showAdminLeadsPage(ctx context.Context, chatID int64, page int) er
 	}
 	rows = append(rows, []Button{callbackButton("🗑 Выбрать заявки", "adm:clean:start:l:a"), callbackButton("♻️ Корзина", "adm:clean:start:l:t")}, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
 	return b.Send(ctx, chatID, text, markup(rows...))
-}
-
-// During polling, retry failed admin deliveries without creating duplicate
-// customer applications. Successful admin deliveries are durably marked.
-func (b *Bot) startLeadDeliveryRetry(ctx context.Context) {
-	b.retryPendingLeadNotifications(ctx)
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				b.retryPendingLeadNotifications(ctx)
-			}
-		}
-	}()
 }

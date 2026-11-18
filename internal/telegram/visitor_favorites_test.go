@@ -36,7 +36,7 @@ func TestVisitorAlertIncludesCurrentFavoritesAndEmptyMarker(t *testing.T) {
 				if _, err := b.favorites.Toggle(88, "001"); err != nil {
 					t.Fatal(err)
 				}
-				if err := b.favorites.Remove(88, "001"); err != nil {
+				if _, err := b.favorites.Remove(88, "001"); err != nil {
 					t.Fatal(err)
 				}
 				for _, id := range []string{"002", "003"} {

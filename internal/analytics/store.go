@@ -26,14 +26,20 @@ type Event struct {
 	Kind       string    `json:"kind"`
 }
 
+type viewKey struct {
+	userID     int64
+	locationID string
+}
+
 type Store struct {
-	mu     sync.RWMutex
-	path   string
-	events []Event
+	lastViews map[viewKey]time.Time
+	mu        sync.RWMutex
+	path      string
+	events    []Event
 }
 
 func Open(path string) (*Store, error) {
-	s := &Store{path: path}
+	s := &Store{path: path, lastViews: make(map[viewKey]time.Time)}
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -52,7 +58,7 @@ func Open(path string) (*Store, error) {
 		if err = e.Validate(); err != nil {
 			return nil, err
 		}
-		s.events = append(s.events, e)
+		s.cacheEvent(e)
 	}
 	return s, scanner.Err()
 }
@@ -67,6 +73,19 @@ func (e Event) Validate() error {
 		return errors.New("invalid analytics event kind")
 	}
 }
+
+// Keep the most recent accepted opening for each client and card. Restored
+// log entries can be out of order, so rebuild the index by timestamp.
+func (s *Store) cacheEvent(e Event) {
+	s.events = append(s.events, e)
+	if e.Kind == View {
+		key := viewKey{e.UserID, e.LocationID}
+		if e.At.After(s.lastViews[key]) {
+			s.lastViews[key] = e.At
+		}
+	}
+}
+
 func (s *Store) Record(id int64, locID, kind string, at time.Time) error {
 	if s == nil {
 		return nil
@@ -78,15 +97,9 @@ func (s *Store) Record(id int64, locID, kind string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if kind == View {
-		// Prevent favorites-toggle refreshes and repeated taps from inflating views.
-		for i := len(s.events) - 1; i >= 0 && i >= len(s.events)-250; i-- {
-			old := s.events[i]
-			if old.At.Before(e.At.Add(-20 * time.Second)) {
-				break
-			}
-			if old.Kind == View && old.UserID == id && old.LocationID == locID {
-				return nil
-			}
+		last, ok := s.lastViews[viewKey{id, locID}]
+		if ok && e.At.Sub(last).Abs() <= 20*time.Second {
+			return nil
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
@@ -107,7 +120,7 @@ func (s *Store) Record(id int64, locID, kind string, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	s.events = append(s.events, e)
+	s.cacheEvent(e)
 	return nil
 }
 
@@ -204,13 +217,13 @@ func (s *Store) Rankings(now time.Time, days int, kind string, allIDs []string, 
 	return output
 }
 func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	n, err := Open(s.path)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.events = n.events
-	s.mu.Unlock()
+	s.events, s.lastViews = n.events, n.lastViews
 	return nil
 }
 func (s *Store) Path() string { return s.path }
@@ -228,7 +241,7 @@ func (s *Store) WithExclusiveFile(fn func() error) error {
 	err := fn()
 	fresh, reloadErr := Open(s.path)
 	if reloadErr == nil {
-		s.events = fresh.events
+		s.events, s.lastViews = fresh.events, fresh.lastViews
 	}
 	return errors.Join(err, reloadErr)
 }

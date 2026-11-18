@@ -44,16 +44,16 @@ func TestNearestSortedAndWithoutCoordinates(t *testing.T) {
 	}
 }
 func TestNearButtonIsInlineNotNative(t *testing.T) {
-	menu := startMenuMarkup(defaultProjectMapURL)
+	menu := startMenuMarkup(defaultProjectMapURL, leadButton("menu", ""), false)
 	rows := menu["inline_keyboard"].([][]Button)
-	if len(rows) != 5 || len(rows[2]) != 1 || len(rows[3]) != 1 {
+	if len(rows) != 4 || len(rows[2]) != 2 || len(rows[3]) != 1 {
 		t.Fatalf("expected 2x2 menu with inline Nearby below: %+v", rows)
 	}
-	if rows[2][0]["callback_data"] != "lead:open:menu" {
-		t.Fatalf("missing lead button above Nearby: %+v", rows[2][0])
+	if rows[3][0]["callback_data"] != "lead:open:menu" {
+		t.Fatalf("missing application action: %+v", rows[3][0])
 	}
-	if rows[3][0]["text"] != "📍 Рядом со мной" || rows[3][0]["callback_data"] != "near" {
-		t.Fatalf("Nearby button is not inline: %+v", rows[3][0])
+	if rows[1][1]["text"] != "📍 Рядом со мной" || rows[1][1]["callback_data"] != "near" {
+		t.Fatalf("Nearby button is not inline: %+v", rows[1][1])
 	}
 	raw, _ := json.Marshal(menu)
 	if strings.Contains(string(raw), "request_location") || strings.Contains(string(raw), "keyboard") && !strings.Contains(string(raw), "inline_keyboard") {
@@ -376,7 +376,7 @@ func TestWelcomeUsesBusinessGrowthCopy(t *testing.T) {
 	}
 }
 
-func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
+func TestStartCommandSendsFreshMenuFirst(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", mapURL: defaultProjectMapURL, http: &http.Client{Transport: tr}}
 	msg := &message{
@@ -387,14 +387,10 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	if err := b.handle(context.Background(), update{Message: msg}); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.payloads) != 2 {
-		t.Fatalf("expected temporary keyboard removal and inline menu, got %d messages", len(tr.payloads))
+	if len(tr.requests) != 1 || len(tr.payloads) != 1 {
+		t.Fatalf("expected only the fresh menu in the request handler, got %v", tr.requests)
 	}
-	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if reset["remove_keyboard"] != true {
-		t.Fatalf("old keyboard was not removed: %+v", reset)
-	}
-	welcome := tr.payloads[1]
+	welcome := tr.payloads[0]
 	welcomeText, _ := welcome["text"].(string)
 	if !strings.Contains(welcomeText, "Привет, Иван Иванов!") {
 		t.Fatalf("personalized welcome missing: %+v", welcome)
@@ -404,8 +400,8 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 		t.Fatalf("welcome must contain inline buttons only: %+v", markup)
 	}
 	rows, ok := markup["inline_keyboard"].([]any)
-	if !ok || len(rows) != 5 {
-		t.Fatalf("expected five rows (2x2 + lead + Nearby + cabinet) in inline menu: %+v", markup)
+	if !ok || len(rows) != 4 {
+		t.Fatalf("expected four menu rows in inline menu: %+v", markup)
 	}
 	assertButton := func(row, column int, label, dataType, data string) {
 		t.Helper()
@@ -420,14 +416,12 @@ func TestStartCommandShowsInlineNearAndRemovesOldKeyboard(t *testing.T) {
 	}
 	assertButton(0, 0, "📋 Список локаций", "callback_data", "list")
 	assertButton(0, 1, "🗺 Карта локаций", "url", defaultProjectMapURL)
-	assertButton(1, 0, "⭐ Избранное", "callback_data", "favorites")
-	assertButton(1, 1, "🔎 Поиск локации", "callback_data", "search:menu")
-	assertButton(2, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
-	assertButton(3, 0, "📍 Рядом со мной", "callback_data", "near")
-	assertButton(4, 0, "📋 Мои заявки", "callback_data", "cab:home")
-	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
-		t.Fatalf("temporary reset message not deleted: %+v", tr.requests)
-	}
+	assertButton(2, 0, "⭐ Избранное", "callback_data", "favorites")
+	assertButton(1, 0, "🔎 Поиск локации", "callback_data", "search:menu")
+	assertButton(3, 0, "📝 Оставить заявку", "callback_data", "lead:open:menu")
+	assertButton(1, 1, "📍 Рядом со мной", "callback_data", "near")
+	assertButton(2, 1, "📋 Мои заявки", "callback_data", "cab:home")
+	assertButton(2, 1, "📋 Мои заявки", "style", "success")
 }
 
 func TestMainMenuMapButtonOpensLink(t *testing.T) {
@@ -498,36 +492,29 @@ func TestManualGeopositionStillShowsNearestLocations(t *testing.T) {
 	}
 }
 
-func TestNearCallbackExplainsManualSharingAndRemovesOldKeyboard(t *testing.T) {
+func TestNearShowsInstructionsFirst(t *testing.T) {
 	tr := &captureTransport{}
 	b := &Bot{token: "TEST", http: &http.Client{Transport: tr}}
 	if err := b.requestLocation(context.Background(), 123); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.payloads) != 2 {
-		t.Fatalf("expected reset and instruction, got %d", len(tr.payloads))
+	if len(tr.requests) != 1 || len(tr.payloads) != 1 {
+		t.Fatalf("expected only nearby instructions, got %v", tr.requests)
 	}
-	reset, _ := tr.payloads[0]["reply_markup"].(map[string]any)
-	if reset["remove_keyboard"] != true {
-		t.Fatalf("legacy keyboard not removed: %+v", reset)
-	}
-	message, _ := tr.payloads[1]["text"].(string)
+	message, _ := tr.payloads[0]["text"].(string)
 	if !strings.Contains(message, "Яндекс Карты") || !strings.Contains(message, "Скопировать ссылку") || !strings.Contains(message, "55.751, 37.618") {
 		t.Fatalf("instructions missing: %q", message)
 	}
 	if strings.Contains(message, "Telegram не позволяет запросить геопозицию") || strings.Contains(message, "Геопозиция не сохраняется в базе") || strings.Contains(message, "Бот покажет ближайшие точки") {
 		t.Fatalf("obsolete technical disclaimer remains: %q", message)
 	}
-	kb, _ := tr.payloads[1]["reply_markup"].(map[string]any)
+	kb, _ := tr.payloads[0]["reply_markup"].(map[string]any)
 	if _, ok := kb["inline_keyboard"]; !ok || kb["keyboard"] != nil {
 		t.Fatalf("map link guide has wrong keyboard: %+v", kb)
 	}
 	rawButtons, _ := json.Marshal(kb)
 	if !strings.Contains(string(rawButtons), "https://yandex.ru/maps/") {
 		t.Fatalf("Yandex Maps button missing: %+v", kb)
-	}
-	if len(tr.requests) != 3 || tr.requests[2] != "/botTEST/deleteMessage" {
-		t.Fatalf("reset must be cleaned up: %+v", tr.requests)
 	}
 }
 

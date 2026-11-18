@@ -10,7 +10,25 @@ import (
 	"time"
 )
 
-func cabinetButton() Button { return callbackButton("📋 Мои заявки", "cab:home") }
+func cabinetButton() Button {
+	return Button{"text": "📋 Мои заявки", "callback_data": "cab:home", "style": "success"}
+}
+
+func (b *Bot) homeLeadAction(userID int64) Button {
+	if b.leads != nil {
+		if lead, ok := b.leads.submitted(userID); ok && !lead.isResolved() {
+			data := fmt.Sprintf("cab:add:%d", lead.Number)
+			if draft, ok := b.leads.supplement(userID); ok && draft.Number == lead.Number {
+				data = supplementData("resume", draft, "")
+			}
+			return callbackButton("➕ Дополнить заявку", data)
+		}
+		if _, ok := b.leads.draft(userID); ok {
+			return callbackButton("▶️ Продолжить заявку", "lead:resume")
+		}
+	}
+	return leadButton("menu", "")
+}
 func caseButton(title string, n int64) Button {
 	return callbackButton(title, fmt.Sprintf("cab:view:%d", n))
 }
@@ -361,8 +379,7 @@ func (b *Bot) handleCabinetCallback(ctx context.Context, chatID int64, from user
 			text = "✅ Дополнение сохранено и передано специалисту. Статус дополнения можно проверить в разделе «Мои заявки»."
 		}
 		replyErr := b.Send(ctx, chatID, text, markup([]Button{caseButton("📂 Открыть обращение", l.Number)}))
-		b.refreshLeadAdminMessages(ctx, l)
-		b.notifyCaseEvents(ctx, time.Now().UTC())
+		b.queueLeadDelivery(l.Number)
 		return replyErr
 	}
 	d, ok := b.leads.supplement(from.ID)

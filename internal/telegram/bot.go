@@ -45,6 +45,11 @@ type Bot struct {
 	adminStates               map[int64]*adminSession
 	visitors                  *visitorStore
 	leadNotifyMu              sync.Mutex
+	deliveryMu                sync.Mutex
+	refreshCases              map[int64]bool
+	deliveryWake              chan struct{}
+	keyboardCleanup           chan int64
+	manualSync                sync.Mutex
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -107,14 +112,17 @@ func homeMarkup() any                          { return markup([]Button{menuButt
 
 // Keep every navigation action inline. Requesting a location from an inline
 // button is not supported by Telegram: users send their location via Attach.
-func startMenuMarkup(mapURL string) map[string]any {
-	return markup(
-		[]Button{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
-		[]Button{callbackButton("⭐ Избранное", "favorites"), callbackButton("🔎 Поиск локации", "search:menu")},
-		[]Button{leadButton("menu", "")},
-		[]Button{callbackButton("📍 Рядом со мной", "near")},
-		[]Button{cabinetButton()},
-	)
+func startMenuMarkup(mapURL string, action Button, admin bool) map[string]any {
+	rows := [][]Button{
+		{callbackButton("📋 Список локаций", "list"), urlButton("🗺 Карта локаций", mapURL)},
+		{callbackButton("🔎 Поиск локации", "search:menu"), callbackButton("📍 Рядом со мной", "near")},
+		{callbackButton("⭐ Избранное", "favorites"), cabinetButton()},
+		{action},
+	}
+	if admin {
+		rows = append(rows, []Button{callbackButton("⚙️ Админ-панель", "adm:menu")})
+	}
+	return markup(rows...)
 }
 
 const defaultProjectMapURL = "https://yandex.ru/maps/?um=constructor%3A4e091ad95afb487039d07dc0667d6d596da173fe30cff48c7f2e234b7150d7f0&source=constructorLink"
@@ -151,6 +159,8 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 		adminIDs: ids, leads: leads, metrics: metrics, visitors: visitors, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
 		compareSelections: make(map[int64][]string),
+		deliveryWake:      make(chan struct{}, 1),
+		keyboardCleanup:   make(chan int64, 64),
 	}, nil
 }
 func (b *Bot) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
@@ -206,44 +216,29 @@ func welcomeText(sender user) string {
 	return greeting + "\n\n🚀 <b>Не просто точки на карте. Точки роста твоего бизнеса!</b>\n\nМы собрали список локаций с интересными возможностями для открытия и развития бизнеса.\n\nИзучай расположение, потенциальную аудиторию и преимущества каждой точки. Сравнивай варианты и сохраняй лучшие в избранное ⭐\n\n<b>Найди свою следующую точку роста 👇</b>"
 }
 
-// Clear any native reply keyboard left by older versions. Telegram requires
-// a separate message to remove it; the transient reset message is deleted
-// after the inline menu has been delivered.
+// Deliver the requested screen first. Legacy keyboard migration is best effort
+// and must never make a user wait for two extra Telegram calls.
 func (b *Bot) sendInlineAndRemoveReplyKeyboard(ctx context.Context, chatID int64, text string, inline any) error {
-	if _, ok := navigationFromContext(ctx, chatID); ok {
-		return b.Send(ctx, chatID, text, inline)
-	}
-	if _, ok := inlineNavigationFromContext(ctx); ok {
-		return b.Send(ctx, chatID, text, inline)
-	}
-	resetRaw, resetErr := b.call(ctx, "sendMessage", map[string]any{
-		"chat_id":              chatID,
-		"text":                 "·",
-		"disable_notification": true,
-		"reply_markup":         map[string]any{"remove_keyboard": true},
-	})
-	if resetErr != nil {
-		log.Printf("Remove legacy reply keyboard: %v", resetErr)
-	}
 	if err := b.Send(ctx, chatID, text, inline); err != nil {
 		return err
 	}
-	if resetErr == nil {
-		var resetMessage struct {
-			MessageID int `json:"message_id"`
-		}
-		if err := json.Unmarshal(resetRaw, &resetMessage); err == nil && resetMessage.MessageID > 0 {
-			if _, err := b.call(ctx, "deleteMessage", map[string]any{
-				"chat_id": chatID, "message_id": resetMessage.MessageID,
-			}); err != nil {
-				log.Printf("Delete reply keyboard reset message: %v", err)
-			}
-		}
+	if _, ok := navigationFromContext(ctx, chatID); ok {
+		return nil
+	}
+	if _, ok := inlineNavigationFromContext(ctx); ok {
+		return nil
+	}
+	select {
+	case b.keyboardCleanup <- chatID:
+	default: // Retry on the next visit if the migration worker is busy.
 	}
 	return nil
 }
 
 func (b *Bot) welcome(ctx context.Context, chatID int64, sender user) error {
+	if _, shared := inlineNavigationFromContext(ctx); shared {
+		return b.Send(ctx, chatID, welcomeText(sender), startMenuMarkup(b.mapURL, leadButton("menu", ""), false))
+	}
 	return b.sendInlineAndRemoveReplyKeyboard(ctx, chatID, welcomeText(sender), b.adminHomeMarkup(b.mapURL, sender.ID))
 }
 
@@ -955,11 +950,14 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			return b.showLocation(ctx, chatID, u.Callback.From.ID, parts[0], page)
 		case strings.HasPrefix(u.Callback.Data, "fav:remove:"):
 			stationID := strings.TrimPrefix(u.Callback.Data, "fav:remove:")
-			if err := b.favorites.Remove(u.Callback.From.ID, stationID); err != nil {
+			removed, err := b.favorites.Remove(u.Callback.From.ID, stationID)
+			if err != nil {
 				return err
 			}
 			b.removeComparisonSelection(u.Callback.From.ID, stationID)
-			b.recordLocationAnalytics(u.Callback.From.ID, stationID, analytics.FavoriteRemoved)
+			if removed {
+				b.recordLocationAnalytics(u.Callback.From.ID, stationID, analytics.FavoriteRemoved)
+			}
 			return b.showFavorites(ctx, chatID, u.Callback.From.ID)
 		}
 		return nil
@@ -1001,12 +999,24 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if input == "" {
 		return nil
 	}
+	// Keep personal navigation ahead of search and draft text handlers.
+	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
+	if at := strings.IndexByte(cmd, '@'); at >= 0 {
+		cmd = cmd[:at]
+	}
+	switch {
+	case cmd == "/version":
+		return b.Send(ctx, chatID, "Karty "+botVersion, markup([]Button{cabinetButton(), menuButton()}))
+	case cmd == "/myrequests" || strings.EqualFold(input, "Мои заявки") || input == "📋 Мои заявки":
+		b.clearResolutionSession(m.From.ID)
+		defer b.observeVisitor(m.From, "Мои заявки", false)
+		return b.showCabinet(ctx, chatID, m.From.ID)
+	}
 	// Track navigation labels, never store raw user-entered text or phone numbers.
-	cmdForVisitor := strings.SplitN(strings.ToLower(input), " ", 2)[0]
-	if cmdForVisitor == "/start" || strings.HasPrefix(cmdForVisitor, "/start@") {
-		b.observeVisitor(m.From, "Главное меню", true)
+	if cmd == "/start" {
+		defer b.observeVisitor(m.From, "Главное меню", true)
 	} else if strings.HasPrefix(input, "/") {
-		switch cmdForVisitor {
+		switch cmd {
 		case "/list":
 			b.observeVisitor(m.From, "Список локаций", false)
 		case "/favorites":
@@ -1067,10 +1077,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		}
 		b.clearResolutionSession(m.From.ID)
 	}
-	cmd := strings.SplitN(strings.ToLower(input), " ", 2)[0]
-	if at := strings.IndexByte(cmd, '@'); at >= 0 {
-		cmd = cmd[:at]
-	}
 	switch cmd {
 	case "/start", "/help":
 		return b.welcome(ctx, chatID, m.From)
@@ -1108,18 +1114,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if !b.adminIDs[m.From.ID] {
 			return b.Send(ctx, chatID, "Доступно только администратору. ID: /id", nil)
 		}
-		_ = b.Send(ctx, chatID, "Обновляю фотографии из Яндекс Диска…", nil)
-		c, cancel := context.WithTimeout(ctx, 7*time.Minute)
-		defer cancel()
-		r, err := b.syncer.Run(c)
-		if err != nil {
-			return b.Send(ctx, chatID, "Синхронизация не удалась: "+html.EscapeString(err.Error()), nil)
-		}
-		reply := fmt.Sprintf("Файлов: %d · скачано: %d · без изменений: %d · ошибок: %d", r.Total, r.Downloaded, r.Skipped, len(r.Failures))
-		if len(r.Failures) > 0 {
-			reply += "\n" + html.EscapeString(strings.Join(r.Failures[:min(3, len(r.Failures))], "\n"))
-		}
-		return b.Send(ctx, chatID, reply, nil)
+		return b.startManualSync(ctx, chatID)
 	case "/status":
 		if !b.adminIDs[m.From.ID] {
 			return b.Send(ctx, chatID, "Доступно только администратору.", nil)
@@ -1212,21 +1207,16 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := json.Unmarshal(me, &identity); err == nil {
 		b.botID = identity.ID
 	}
-	b.startLeadDeliveryRetry(ctx)
+	go b.runLeadDelivery(ctx)
+	go b.runKeyboardCleanup(ctx)
+	go b.configureTelegramMenu(ctx)
 	go b.autoBackupLoop(ctx)
 	go b.visitorMonitor(ctx)
-	// Only /start is shown in Telegram's command picker. All other
-	// user and administrator workflows remain accessible through bot buttons.
-	_, _ = b.call(ctx, "setMyCommands", map[string]any{"commands": []map[string]string{
-		{"command": "start", "description": "Главное меню"},
-	}})
-	// Explicitly remove any Mini App menu configured by an older deployment.
-	_, _ = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})
 	var offset int64
 	if raw, err := os.ReadFile(b.offsetFile); err == nil {
 		offset, _ = strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 	}
-	log.Println("Telegram long polling started (no Mini App, no open ports)")
+	log.Printf("Karty %s: Telegram long polling started (@%s)", botVersion, identity.Username)
 	for ctx.Err() == nil {
 		raw, err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "limit": 30, "allowed_updates": []string{"message", "callback_query", "inline_query", "chosen_inline_result"}})
 		if err != nil {

@@ -70,18 +70,9 @@ func (b *Bot) adminSession(userID int64) *adminSession {
 	return b.adminStates[userID]
 }
 func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
-	rows := startMenuMarkup(mapURL)
-	if !b.isAdmin(userID) {
-		return rows
-	}
-	// Append the button without mutating the shared rows.
-	if obj, ok := any(rows).(map[string]any); ok {
-		raw, _ := obj["inline_keyboard"].([][]Button)
-		added := append(append([][]Button{}, raw...), []Button{callbackButton("⚙️ Админ-панель", "adm:menu")})
-		return markup(added...)
-	}
-	return rows
+	return startMenuMarkup(mapURL, b.homeLeadAction(userID), b.isAdmin(userID))
 }
+
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
 	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать и добавлять локации, управлять заявками, просматривать аналитику и посетителей без заявки, работать с резервными копиями и настройками."
 	return b.Send(ctx, chatID, msg, markup(
@@ -183,7 +174,14 @@ func (b *Bot) showAdminStats(ctx context.Context, chatID int64, metric string, d
 		return b.Send(ctx, chatID, "Аналитика временно недоступна.", nil)
 	}
 	scores := b.metrics.Rankings(time.Now().UTC(), days, metric, ids, b.adminCurrentFavorites(), b.adminLeadDates())
-	labels := map[string]string{"views": "👁 Просмотры", "unique": "👤 Уникальные просмотры", "added": "⭐ Добавления в избранное", "saved": "⭐ Сейчас в избранном", "leads": "🎯 Заявки"}
+	definitions := map[string]struct{ label, description string }{
+		"views":  {"👁 Просмотры", "Сколько раз клиенты открыли карточку за выбранный период. Повторные открытия одним клиентом в течение 20 секунд считаются одним просмотром."},
+		"unique": {"👤 Уникальные просмотры", "Сколько разных клиентов открыли карточку за выбранный период. Каждый клиент учитывается один раз для каждой локации."},
+		"added":  {"⭐ Добавления в избранное", "Сколько раз за выбранный период клиенты добавили локацию в избранное. Если клиент позже убрал её, добавление остаётся в статистике."},
+		"saved":  {"⭐ Сейчас в избранном", "У скольких клиентов локация сохранена сейчас. Учитываются и сохранения, сделанные до запуска аналитики, если локация всё ещё в избранном."},
+		"leads":  {"🎯 Заявки", "В скольких заявках выбрали локацию за указанный период. Учитываются и локации из дополнений — по дате их добавления."},
+	}
+	selected := definitions[metric]
 	period := "За всё время"
 	if days > 0 {
 		period = fmt.Sprintf("За %d дней", days)
@@ -192,7 +190,7 @@ func (b *Bot) showAdminStats(ctx context.Context, chatID int64, metric string, d
 		period = "На текущий момент"
 	}
 	var text strings.Builder
-	text.WriteString("📊 <b>ТОП-10 локаций</b>\n" + labels[metric] + " · " + period + "\n\n")
+	text.WriteString("📊 <b>ТОП-10 локаций</b>\n" + selected.label + " · " + period + "\n" + selected.description + "\n\n")
 	rows := [][]Button{}
 	for index, r := range scores {
 		n := r.Views
@@ -208,15 +206,6 @@ func (b *Bot) showAdminStats(ctx context.Context, chatID int64, metric string, d
 		}
 		text.WriteString(fmt.Sprintf("%d. <b>%s</b> — %d\n", index+1, html.EscapeString(names[r.LocationID]), n))
 		rows = append(rows, []Button{callbackButton(fmt.Sprintf("%d. %s · %d", index+1, limitRunes(names[r.LocationID], 33), n), "adm:insight:"+r.LocationID+":"+strconv.Itoa(days))})
-	}
-	if metric == "views" || metric == "unique" {
-		text.WriteString("\n<em>Учёт открытий карточек, а не физических посещений. История до внедрения аналитики недоступна.</em>")
-	}
-	if metric == "added" {
-		text.WriteString("\n<em>История добавлений ведётся с момента включения аналитики.</em>")
-	}
-	if metric == "saved" {
-		text.WriteString("\n<em>Это текущий остаток сохранений, а не статистика за период.</em>")
 	}
 	rows = append(rows, []Button{callbackButton("👁 Просмотры", "adm:stats:views:"+strconv.Itoa(days)), callbackButton("⭐ Добавления", "adm:stats:added:"+strconv.Itoa(days))})
 	rows = append(rows, []Button{callbackButton("👤 Уникальные", "adm:stats:unique:"+strconv.Itoa(days)), callbackButton("🎯 Заявки", "adm:stats:leads:"+strconv.Itoa(days))})
@@ -247,7 +236,7 @@ func (b *Bot) showLocationInsights(ctx context.Context, chatID int64, locationID
 	if days > 0 {
 		period = fmt.Sprintf("за %d дней", days)
 	}
-	description := fmt.Sprintf("📍 <b>%s</b> · <code>%s</code>\n\n📊 Показатели %s\n👁 Открытий: <b>%d</b>\n👤 Уникальных: <b>%d</b>\n⭐ Добавили в избранное: <b>%d</b>\n🎯 Заявок: <b>%d</b>\n\n⭐ <b>Сейчас сохранено: %d</b> (за всё время)", html.EscapeString(publicText(loc.Title)), html.EscapeString(loc.ID), period, r.Views, r.UniqueViews, r.Additions, r.Leads, r.CurrentFavorites)
+	description := fmt.Sprintf("📍 <b>%s</b> · <code>%s</code>\n\n📊 Показатели %s\n👁 Открытий: <b>%d</b>\n👤 Уникальных: <b>%d</b>\n⭐ Добавлений в избранное: <b>%d</b>\n🎯 Заявок: <b>%d</b>\n\n⭐ Сейчас в избранном у клиентов: <b>%d</b>", html.EscapeString(publicText(loc.Title)), html.EscapeString(loc.ID), period, r.Views, r.UniqueViews, r.Additions, r.Leads, r.CurrentFavorites)
 	session := b.adminSession(chatID)
 	metric := session.StatsMetric
 	if metric == "" {
@@ -1129,8 +1118,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		if err != nil {
 			return b.Send(ctx, chatID, "Не удалось изменить статус заявки: "+html.EscapeString(err.Error()), markup([]Button{callbackButton("⬅️ К заявкам", "adm:leads")}))
 		}
-		b.refreshLeadAdminMessages(ctx, lead)
-		b.notifyCaseEvents(ctx, time.Now().UTC())
+		b.queueLeadDelivery(lead.Number)
 		return b.showAdminLeads(ctx, chatID)
 	case data == "adm:tools":
 		return b.showAdminTools(ctx, chatID)
@@ -1140,17 +1128,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		}
 		return b.Send(ctx, chatID, "✅ Каталог обновлён.", markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
 	case data == "adm:sync":
-		if b.syncer == nil {
-			return b.Send(ctx, chatID, "Синхронизация недоступна.", nil)
-		}
-		_ = b.Send(ctx, chatID, "☁️ Синхронизация данных Яндекс Диска…", markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
-		callCtx, cancel := context.WithTimeout(ctx, 7*time.Minute)
-		defer cancel()
-		info, err := b.syncer.Run(callCtx)
-		if err != nil {
-			return b.Send(ctx, chatID, "❌ Синхронизация не выполнена: "+html.EscapeString(err.Error()), nil)
-		}
-		return b.Send(ctx, chatID, fmt.Sprintf("✅ Файлов: %d · скачано: %d · без изменений: %d · ошибок: %d", info.Total, info.Downloaded, info.Skipped, len(info.Failures)), markup([]Button{callbackButton("⬅️ Система", "adm:tools")}))
+		return b.startManualSync(ctx, chatID)
 	case data == "adm:status":
 		items := b.store.List()
 		geo, pics := 0, 0

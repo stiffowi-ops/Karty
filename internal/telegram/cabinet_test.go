@@ -526,3 +526,85 @@ func TestLegacyCasesRemainInTheirOriginalState(t *testing.T) {
 		t.Fatal("legacy assignment was silently resolved")
 	}
 }
+
+
+func TestClosingWarningAt45MinutesOnlyOnceForOwner(t *testing.T) {
+	b, _ := makeLeadTestBot(t)
+	l := serviceLead(t, b, 200)
+	l = sendStoredSupplement(t, b, l.Number, nil, "Нужно уточнить")
+	taken := time.Now().UTC().Add(-45 * time.Minute)
+	if _, _, err := b.leads.mutateCase(l.Number, func(v *leadApplication) (bool, error) {
+		v.TakenAt = &taken
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tr := &caseTransport{}
+	b.http = &http.Client{Transport: tr}
+	ctx := context.Background()
+	b.notifyCaseEvents(ctx, taken.Add(44*time.Minute))
+	if tr.count(200, "скоро будет автоматически завершена") != 0 {
+		t.Fatal("warning sent too early")
+	}
+	b.notifyCaseEvents(ctx, taken.Add(45*time.Minute))
+	if tr.count(200, "скоро будет автоматически завершена") != 1 ||
+		tr.count(300, "скоро будет автоматически завершена") != 0 ||
+		tr.count(200, "Непринятых дополнений: 1") != 1 {
+		t.Fatal("warning was not addressed to the owner or had wrong supplement count")
+	}
+	restored, err := openLeadStore(b.leads.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.leads = restored
+	b.notifyCaseEvents(ctx, taken.Add(46*time.Minute))
+	if tr.count(200, "скоро будет автоматически завершена") != 1 {
+		t.Fatal("warning repeated after restart")
+	}
+	b.notifyCaseEvents(ctx, taken.Add(time.Hour))
+	if tr.count(200, "скоро будет автоматически завершена") != 1 {
+		t.Fatal("warning sent at or after deadline")
+	}
+}
+
+func TestClientSupplementCounterAndChronologicalTimeline(t *testing.T) {
+	b, tr := makeLeadTestBot(t)
+	l := serviceLead(t, b, 200)
+	if err := b.showCabinet(context.Background(), 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fmt.Sprint(tr.card["text"]), "Дополнения: 0 из 2 использовано") {
+		t.Fatal("missing initial supplement counter")
+	}
+	l = sendStoredSupplement(t, b, l.Number, nil, "Первое уточнение")
+	if err := b.showClientCase(context.Background(), 100, 100, l.Number); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fmt.Sprint(tr.card["text"]), "Дополнения: 1 из 2 использовано") ||
+		!strings.Contains(fmt.Sprint(tr.card["text"]), "ожидает принятия") {
+		t.Fatal("missing active supplement counter or acceptance status")
+	}
+	if _, _, err := b.leads.acceptUpdate(l.Number, 1, 200); err != nil {
+		t.Fatal(err)
+	}
+	l = sendStoredSupplement(t, b, l.Number, nil, "Второе уточнение")
+	if err := b.showCabinet(context.Background(), 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fmt.Sprint(tr.card["text"]), "Дополнения: 2 из 2 использовано") ||
+		!strings.Contains(fmt.Sprint(tr.card["text"]), supplementLimitText) {
+		t.Fatal("missing final limit and waiting notice")
+	}
+	for _, page := range []int{0, 1} {
+		if err := b.showCaseTimeline(context.Background(), 100, l, page, false); err != nil {
+			t.Fatal(err)
+		}
+		screen, _ := tr.card["text"].(string)
+		if !strings.Contains(screen, "События по порядку") {
+			t.Fatal("client timeline did not switch to chronological view")
+		}
+		if page == 0 && (!strings.Contains(screen, "Обращение получено") || !strings.Contains(screen, "Специалист взял обращение в работу")) {
+			t.Fatal("first page does not start from receipt and assignment")
+		}
+	}
+}

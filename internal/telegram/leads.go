@@ -121,9 +121,9 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 		}
 		return b.Send(ctx, chatID, text, markup([]Button{callbackButton("✅ Использовать данные", "lead:reuse")}, []Button{callbackButton("✏️ Заполнить заново", "lead:fresh")}, []Button{callbackButton("❌ Отменить", "lead:cancel")}))
 	case "kind":
-		return b.Send(ctx, chatID, "📝 <b>Оставить заявку</b>\n\nПодскажите, пожалуйста, Вы уже сотрудничаете с нами?", markup(
-			[]Button{callbackButton("🤝 Уже работаю с Вами", "lead:kind:existing")},
-			[]Button{callbackButton("🚀 Хочу работать с Вами", "lead:kind:new")},
+		return b.Send(ctx, chatID, "📝 <b>Оставить заявку</b>\n\nДля начала уточним один момент: Вы уже сотрудничаете с нами?", markup(
+			[]Button{callbackButton("🤝 Уже сотрудничаю", "lead:kind:existing")},
+			[]Button{callbackButton("🚀 Хочу сотрудничать", "lead:kind:new")},
 			[]Button{callbackButton("❌ Отменить", "lead:cancel")},
 		))
 	case "company":

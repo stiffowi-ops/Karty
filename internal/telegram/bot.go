@@ -832,7 +832,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			if strings.HasPrefix(u.Callback.Data, "adm:case:") {
 				return b.handleCaseAdminCallback(adminCtx, u.Callback.From, u.Callback.Data)
 			}
-			b.clearResolutionSession(u.Callback.From.ID)
 			return b.handleAdminCallback(adminCtx, u.Callback.From.ID, u.Callback.From, u.Callback.Data)
 		}
 		if strings.HasPrefix(u.Callback.Data, "fav:inline:") {
@@ -875,7 +874,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if strings.HasPrefix(u.Callback.Data, "lead:") {
 			return b.handleLeadCallback(ctx, chatID, u.Callback.From, u.Callback.Data)
 		}
-		b.clearResolutionSession(u.Callback.From.ID)
 		if err := b.pauseClientForms(u.Callback.From.ID); err != nil {
 			return err
 		}
@@ -981,7 +979,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 			if err := b.pauseClientForms(m.From.ID); err != nil {
 				return err
 			}
-			b.clearResolutionSession(m.From.ID)
 			b.clearSelectedSearchPrompt(ctx, m.Chat.ID)
 		}
 		return nil
@@ -990,7 +987,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if err := b.pauseClientForms(m.From.ID); err != nil {
 			return err
 		}
-		b.clearResolutionSession(m.From.ID)
 		// Keep the native location-sharing button available for the next search.
 		return b.showNear(ctx, m.Chat.ID, m.Location)
 	}
@@ -1008,7 +1004,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	case cmd == "/version":
 		return b.Send(ctx, chatID, "Karty "+botVersion, markup([]Button{cabinetButton(), menuButton()}))
 	case cmd == "/myrequests" || strings.EqualFold(input, "Мои заявки") || input == "📋 Мои заявки":
-		b.clearResolutionSession(m.From.ID)
 		defer b.observeVisitor(m.From, "Мои заявки", false)
 		return b.showCabinet(ctx, chatID, m.From.ID)
 	}
@@ -1051,7 +1046,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if err := b.pauseClientForms(m.From.ID); err != nil {
 			return err
 		}
-		b.clearResolutionSession(m.From.ID)
 	}
 	switch input {
 	case "📋 Список локаций", "📋 Список станций":
@@ -1075,7 +1069,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		if err := b.pauseClientForms(m.From.ID); err != nil {
 			return err
 		}
-		b.clearResolutionSession(m.From.ID)
 	}
 	switch cmd {
 	case "/start", "/help":
@@ -1136,9 +1129,6 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	}
 	if strings.HasPrefix(cmd, "/") {
 		return b.Send(ctx, chatID, "Неизвестная команда. /help", nil)
-	}
-	if handled, err := b.handleResolutionText(ctx, chatID, m.From, input); handled {
-		return err
 	}
 	if handled, err := b.handleAdminText(ctx, chatID, m.From, input); handled {
 		return err
@@ -1207,6 +1197,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := json.Unmarshal(me, &identity); err == nil {
 		b.botID = identity.ID
 	}
+	nextExpiry := b.expireDueCases()
+	go b.runCaseExpiry(ctx, nextExpiry)
 	go b.runLeadDelivery(ctx)
 	go b.runKeyboardCleanup(ctx)
 	go b.configureTelegramMenu(ctx)

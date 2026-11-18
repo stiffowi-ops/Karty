@@ -33,7 +33,7 @@ func TestLeadSoftDeleteRestoreAndPermanentErase(t *testing.T) {
 		if _, _, err := b.leads.takeInWork(n, 200); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := b.leads.resolveCase(n, 200, 0, "Вопрос решён, результат передан клиенту"); err != nil {
+		if _, _, err := b.leads.resolveCase(n, 200); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestAdminCleanupSelectionAndConfirmation(t *testing.T) {
 	if _, _, err := b.leads.takeInWork(n, 200); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := b.leads.resolveCase(n, 200, 0, "Вопрос решён, результат передан клиенту"); err != nil {
+	if _, _, err := b.leads.resolveCase(n, 200); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

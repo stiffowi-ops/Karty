@@ -52,7 +52,7 @@ func TestOnlyResolvedLeadAllowsSecondApplicationAndKeepsHistory(t *testing.T) {
 	if err := b.leads.putDraft(100, firstDraft); err == nil {
 		t.Fatal("in-work application must remain active")
 	}
-	if _, changed, err := b.leads.resolveCase(1, processed.TakenBy, 0, "Обсудили локацию, материалы отправлены"); err != nil || !changed {
+	if _, changed, err := b.leads.resolveCase(1, processed.TakenBy); err != nil || !changed {
 		t.Fatalf("resolve: %v %v", changed, err)
 	}
 	if err := b.leads.putDraft(100, firstDraft); err != nil {

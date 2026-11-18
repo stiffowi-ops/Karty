@@ -23,10 +23,6 @@ import (
 )
 
 type adminSession struct {
-	ResolveLead      int64
-	ResolveVersion   int
-	ResolveSummary   string
-	ResolveToken     string
 	LocationID       string
 	OriginalHash     string
 	Draft            catalog.CardRevision

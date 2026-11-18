@@ -212,7 +212,6 @@ func (b *Bot) inlineNavigate(ctx context.Context, callback *callbackQuery) error
 	if err := b.pauseClientForms(callback.From.ID); err != nil {
 		return err
 	}
-	b.clearResolutionSession(callback.From.ID)
 	if strings.HasPrefix(callback.Data, "inline:nav:lead:") {
 		return b.openInlineLead(ctx, callback)
 	}

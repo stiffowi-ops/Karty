@@ -16,6 +16,9 @@ import (
 const supplementReminderDelay = 2 * time.Hour
 const supplementEscalationDelay = 4 * time.Hour
 
+// Notify the assigned administrator 15 minutes before the one-hour deadline.
+const caseClosingWarningAfter = 45 * time.Minute
+
 func (b *Bot) caseAdminRecipients(l leadApplication) []int64 {
 	if l.TakenInWork && b.adminIDs[l.TakenBy] {
 		return []int64{l.TakenBy}
@@ -87,6 +90,13 @@ func (b *Bot) deliverCaseNotice(ctx context.Context, l leadApplication, key stri
 			}
 		}
 	}
+	if strings.HasPrefix(key, "closing:") {
+		deadline := latest.autoCloseAt()
+		now := reminderClock()
+		if latest.ServiceVersion < 2 || latest.TakenBy != chatID || !b.adminIDs[chatID] || deadline.IsZero() || now.Before(deadline.Add(-15*time.Minute)) || !now.Before(deadline) {
+			return
+		}
+	}
 	if strings.HasPrefix(key, "case:") {
 		current, ok := b.leads.submitted(latest.UserID)
 		if !ok || current.Number != latest.Number || latest.TakenInWork || latest.isResolved() {
@@ -142,6 +152,23 @@ func (b *Bot) notifyPendingCaseReminder(l leadApplication, now time.Time, send c
 		send(l, fmt.Sprintf("case:%s:%d", stage, id), id, pendingCaseReminderText(l, stage), adminLeadMarkup(l))
 	}
 }
+// A durable one-time reminder to the current owner; the existing delivery
+// receipts prevent duplicates across retries and bot restarts.
+func (b *Bot) notifyClosingCaseReminder(l leadApplication, now time.Time, send caseNoticeSender) {
+	deadline := l.autoCloseAt()
+	if l.ServiceVersion < 2 || deadline.IsZero() || !b.adminIDs[l.TakenBy] || now.Before(l.TakenAt.Add(caseClosingWarningAfter)) || !now.Before(deadline) {
+		return
+	}
+	unaccepted := 0
+	for _, u := range l.Updates {
+		if u.AcceptedAt == nil {
+			unaccepted++
+		}
+	}
+	message := fmt.Sprintf("⏰ <b>Заявка №%04d скоро будет автоматически завершена.</b>\n\nДо завершения осталось не более 15 минут.\nВремя завершения: <b>%s</b>.\nНепринятых дополнений: %d.", l.Number, caseTime(deadline), unaccepted)
+	send(l, fmt.Sprintf("closing:45:%d", l.TakenBy), l.TakenBy, message, markup([]Button{adminCaseButton(l.Number)}))
+}
+
 func (b *Bot) notifySupplementReminder(l leadApplication, u leadUpdate, now time.Time, send caseNoticeSender) {
 	stage := adminReminderStage(u.CreatedAt, now)
 	if stage == "" {
@@ -196,6 +223,7 @@ func (b *Bot) notifySelectedCaseEvents(ctx context.Context, now time.Time, cases
 			continue
 		}
 		if l.TakenInWork && !l.isResolved() {
+			b.notifyClosingCaseReminder(l, reminderClock(), send)
 			note := "Статус доступен в разделе «Мои заявки»."
 			if !l.supplementLimitReached() {
 				note = "Статус и возможность дополнить обращение доступны в разделе «Мои заявки»."

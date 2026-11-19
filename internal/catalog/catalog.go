@@ -260,6 +260,9 @@ func (s *Store) Reload() error {
 	loc, err = s.appendAdminLocations(loc)
  if err != nil { return err }
  if err := s.applyAdminCards(loc); err != nil { return err }
+ if s.useBundled {
+  if err := s.applyRequestedCatalogRetirements(); err != nil { return err }
+ }
  deleted, err := ReadDeletedLocations(s.DeletedLocationsPath())
  if err != nil { return err }
  if len(deleted) > 0 {

@@ -113,11 +113,11 @@ func TestLeadFlowFromCardAndNotifyEveryAdmin(t *testing.T) {
 	if handled, err := b.handleLeadText(ctx, chatID, u, "Александр"); !handled || err != nil {
 		t.Fatal(handled, err)
 	}
-	if handled, err := b.handleLeadText(ctx, chatID, u, "+7 999 888-77-66"); !handled || err != nil {
+	if handled, err := b.handleLeadText(ctx, chatID, u, "999 888-77-66"); !handled || err != nil {
 		t.Fatal(handled, err)
 	}
 	d, ok := b.leads.draft(u.ID)
-	if !ok || d.Stage != "location_confirm" || d.LocationID != "001" {
+	if !ok || d.Stage != "location_confirm" || d.LocationID != "001" || d.Phone != "+79998887766" {
 		t.Fatalf("location not preselected: %+v", d)
 	}
 	if err := b.handleLeadCallback(ctx, chatID, u, "lead:confirm"); err != nil {
@@ -191,8 +191,10 @@ func TestLeadPhoneValidationAndFriendlyCopy(t *testing.T) {
 	for _, bad := range []string{
 		"123", "test", "+777xyz12345", "+7 99",
 		"+7906528893", "+790652889351", "+7 906 528 89 35 6",
-		"+1 (415) 555-1234", "89065288935", "79065288935",
+		"+1 (415) 555-1234", "79065288935", "906528893", "90652889351",
+		"8906528893", "890652889351", "8065288935", "+7 495 123-45-67",
 		"+7 906 528-89-3X", "+7++9065288935", "+7 906 528 89 35 доб",
+		"+89065288935", "+9065288935",
 	} {
 		if validLeadPhone(bad) {
 			t.Errorf("accepted invalid Russian phone %q", bad)
@@ -202,12 +204,19 @@ func TestLeadPhoneValidationAndFriendlyCopy(t *testing.T) {
 		}
 	}
 	for _, valid := range []string{
+		"9065288935", "906 528-89-35", "(906) 528-89-35",
+		"89065288935", "8 (906) 528-89-35",
 		"+79065288935", "+7 906 528-89-35",
 		"+7 (906) 528 89 35", "  +7 906 528-89-35  ",
 	} {
 		normalized, ok := normalizeLeadPhone(valid)
 		if !ok || normalized != "+79065288935" || !validLeadPhone(valid) {
 			t.Errorf("rejected or incorrectly normalized %q => %q (ok=%v)", valid, normalized, ok)
+		}
+	}
+	for _, input := range []string{"9301288719", "89301288719", "+79301288719"} {
+		if got, ok := normalizeLeadPhone(input); !ok || got != "+79301288719" {
+			t.Errorf("unexpected normalized phone for %q: %q (ok=%v)", input, got, ok)
 		}
 	}
 	lead := leadApplication{Number: 1, UserID: 45, Kind: "new", Company: "ООО <script>", Name: "Ирина", Phone: "+7 999 123-45-67", LocationName: "Метро Троицк", Source: "card"}

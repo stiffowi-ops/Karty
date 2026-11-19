@@ -448,7 +448,13 @@ func (b *Bot) groupCommand(ctx context.Context, m *message) error {
 	if at:=strings.IndexByte(cmd,'@');at>=0 {cmd=cmd[:at]}
 	if cmd=="/panel" {
 		if !b.isAdmin(m.From.ID) {return nil}
-		return b.publishGroupPanel(ctx,m.Chat.ID)
+		if err:=b.publishGroupPanel(ctx,m.Chat.ID);err!=nil{
+			log.Printf("Publish group panel in %d: %v",m.Chat.ID,err)
+			privateCtx:=withGroupScreen(ctx,groupScreen{chatID:m.Chat.ID,userID:m.From.ID,replyEphemeralID:m.EphemeralMessageID})
+			warn:="⚠️ Не удалось обновить или закрепить помощника. Проверьте, что у бота есть права администратора «Закреплять сообщения», затем повторите /panel."
+			if notifyErr:=b.Send(privateCtx,0,warn,nil);notifyErr!=nil{return fmt.Errorf("group panel: %w; private notification: %v",err,notifyErr)}
+		}
+		return nil
 	}
 	recognized:=cmd=="/catalog"||cmd=="/menu"||cmd=="/start"||cmd=="/list"||cmd=="/favorites"||cmd=="/find"||cmd=="/compare"||cmd=="/map"||cmd=="/myrequests"
 	if !recognized{return nil}

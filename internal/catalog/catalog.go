@@ -260,6 +260,15 @@ func (s *Store) Reload() error {
 	loc, err = s.appendAdminLocations(loc)
  if err != nil { return err }
  if err := s.applyAdminCards(loc); err != nil { return err }
+ deleted, err := ReadDeletedLocations(s.DeletedLocationsPath())
+ if err != nil { return err }
+ if len(deleted) > 0 {
+  visible := make([]Location, 0, len(loc))
+  for _, l := range loc {
+   if !deleted[l.ID] { visible = append(visible, l) }
+  }
+  loc = visible
+ }
  sort.Slice(loc, func(i, j int) bool { return loc[i].ID < loc[j].ID })
 	s.mu.Lock()
 	s.locations = loc

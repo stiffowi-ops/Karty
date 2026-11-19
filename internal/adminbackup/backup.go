@@ -181,7 +181,7 @@ func Examine(raw []byte) (Archive, error) {
 	if err = json.Unmarshal(files[effectiveFile], &locations); err != nil {
 		return Archive{}, err
 	}
-	if len(locations) == 0 || len(locations) > 1000 {
+	if len(locations) > 1000 {
 		return Archive{}, errors.New("неверное число локаций")
 	}
 	seen := map[string]bool{}

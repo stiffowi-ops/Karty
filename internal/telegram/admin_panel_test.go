@@ -144,3 +144,22 @@ func TestAdminBackupExportIsZIPDocument(t *testing.T) {
 		t.Fatal("missing archive filename")
 	}
 }
+
+func TestAdminDeleteLocationRequiresConfirmationAndCreatesBackups(t *testing.T) {
+	b,tr:=makeAdminTestBot(t)
+	ctx:=context.Background()
+	nonAdmin:=user{ID:101}
+	admin:=user{ID:100}
+	if err:=b.handleAdminCallback(ctx,101,nonAdmin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
+	if _,ok:=b.store.Find("020");!ok{t.Fatal("non-admin deleted location")}
+	if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteask:020");err!=nil{t.Fatal(err)}
+	if _,ok:=b.store.Find("020");!ok{t.Fatal("confirmation prompt deleted location")}
+	if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
+	if _,ok:=b.store.Find("020");ok{t.Fatal("location still visible after delete")}
+	entries,err:=os.ReadDir(b.autoBackupDirectory())
+	if err!=nil{t.Fatal(err)}
+	if len(entries)!=2{t.Fatalf("expected protective + post-change ZIPs, got %d",len(entries))}
+	if err=b.handleAdminCallback(ctx,100,admin,"adm:restorelocapply:020");err!=nil{t.Fatal(err)}
+	if _,ok:=b.store.Find("020");!ok{t.Fatal("location not restored")}
+	if len(tr.calls)==0{t.Fatal("admin got no feedback")}
+}

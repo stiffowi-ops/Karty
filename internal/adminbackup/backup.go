@@ -25,8 +25,9 @@ const manifestFile = "manifest.json"
 const effectiveFile = "catalog_effective.json"
 const cardsFile = "admin_cards.json"
 const adminLocationsFile = catalog.AdminLocationsFilename
+const deletedLocationsFile = catalog.DeletedLocationsFilename
 
-var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", "visitors.json", DeletionFile, cardsFile, adminLocationsFile}
+var optionalFiles = []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json", "visitors.json", DeletionFile, cardsFile, adminLocationsFile, deletedLocationsFile}
 
 type Manifest struct {
 	Schema    int               `json:"schema"`
@@ -180,7 +181,7 @@ func Examine(raw []byte) (Archive, error) {
 	if err = json.Unmarshal(files[effectiveFile], &locations); err != nil {
 		return Archive{}, err
 	}
-	if len(locations) == 0 || len(locations) > 1000 {
+	if len(locations) > 1000 {
 		return Archive{}, errors.New("неверное число локаций")
 	}
 	seen := map[string]bool{}
@@ -195,6 +196,13 @@ func Examine(raw []byte) (Archive, error) {
 	}
 	// Older archives have no separately stored custom locations. New archives
 	// must include the exact custom IDs represented in the effective catalog.
+	deletedLocations := map[string]bool{}
+	if raw, exists := files[deletedLocationsFile]; exists {
+		if err := json.Unmarshal(raw, &deletedLocations); err != nil {
+			return Archive{}, fmt.Errorf("invalid deleted locations: %w", err)
+		}
+		if err := catalog.ValidateDeletedLocations(deletedLocations); err != nil { return Archive{}, err }
+	}
 	customLocations := map[string]catalog.Location{}
 	if raw, exists := files[adminLocationsFile]; exists {
 		if err := json.Unmarshal(raw, &customLocations); err != nil {
@@ -212,7 +220,7 @@ func Examine(raw []byte) (Archive, error) {
 		}
 	}
 	for id := range customLocations {
-		if !seen[id] {
+		if !seen[id] && !deletedLocations[id] {
 			return Archive{}, fmt.Errorf("custom location %s is not in the catalog", id)
 		}
 	}
@@ -264,7 +272,7 @@ func Examine(raw []byte) (Archive, error) {
 		}
 		unique := map[string]bool{}
 		for _, id := range ids {
-			if !seen[id] || unique[id] {
+			if (!seen[id] && !deletedLocations[id]) || unique[id] {
 				return Archive{}, errors.New("неверная или дублирующаяся локация в избранном")
 			}
 			unique[id] = true
@@ -301,6 +309,19 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 	if err = json.Unmarshal(archive.Contents[effectiveFile], &locations); err != nil {
 		return path, err
 	}
+	// Preserve current removals when restoring older backups. Old archive
+	// visibility must never silently resurrect an administrator-deleted ID.
+	currentDeleted, err := catalog.ReadDeletedLocations(filepath.Join(root, deletedLocationsFile))
+	if err != nil { return path, err }
+	archivedDeleted := map[string]bool{}
+	if raw := archive.Contents[deletedLocationsFile]; len(raw)>0 {
+		if err := json.Unmarshal(raw,&archivedDeleted); err != nil { return path, err }
+		if err := catalog.ValidateDeletedLocations(archivedDeleted); err != nil { return path, err }
+	}
+	for id := range archivedDeleted { currentDeleted[id] = true }
+	if err := catalog.ValidateDeletedLocations(currentDeleted); err != nil { return path, err }
+	deletedRaw, err := json.MarshalIndent(currentDeleted, "", "  ")
+	if err != nil { return path, err }
 	archived := make(map[string]catalog.Location, len(locations))
 	for _, loc := range locations {
 		archived[loc.ID] = loc
@@ -313,12 +334,12 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 	// locations can be added from the archive, while custom locations created
 	// after an older archive are always preserved.
 	for id := range currentIDs {
-		if _, found := archived[id]; !found && !catalog.IsAdminLocationID(id) {
+		if _, found := archived[id]; !found && !catalog.IsAdminLocationID(id) && !currentDeleted[id] {
 			return path, fmt.Errorf("архив не содержит обязательную локацию %s", id)
 		}
 	}
 	for id := range archived {
-		if _, found := currentIDs[id]; !found && !catalog.IsAdminLocationID(id) {
+		if _, found := currentIDs[id]; !found && !catalog.IsAdminLocationID(id) && !currentDeleted[id] {
 			return path, fmt.Errorf("локация %s отсутствует в текущем каталоге", id)
 		}
 	}
@@ -368,7 +389,7 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 	if err != nil {
 		return path, err
 	}
-	replacement := map[string][]byte{cardsFile: override, adminLocationsFile: customRaw}
+	replacement := map[string][]byte{cardsFile: override, adminLocationsFile: customRaw, deletedLocationsFile: deletedRaw}
 	if mode == "full" {
 		for _, name := range []string{"leads.json", "favorites.json", "analytics.jsonl", "admin_history.json"} {
 			replacement[name] = copyBytes(archive.Contents[name])

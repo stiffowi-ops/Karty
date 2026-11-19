@@ -39,6 +39,7 @@ type Bot struct {
 	lastScreens               map[int64]int
 	searchPrompts             map[int64]int
 	botID                     int64
+	botUsername               string
 	metrics                   *analytics.Store
 	adminMu                   sync.Mutex
 	backupMu                  sync.Mutex
@@ -73,6 +74,8 @@ type message struct {
 	ViaBot    *user             `json:"via_bot"`
 	Location  *geoPoint         `json:"location"`
 	Document  *telegramDocument `json:"document"`
+	ReceiverUser *user `json:"receiver_user,omitempty"`
+	EphemeralMessageID int `json:"ephemeral_message_id,omitempty"`
 }
 type callbackQuery struct {
 	ID              string   `json:"id"`
@@ -188,6 +191,9 @@ func (b *Bot) call(ctx context.Context, method string, payload any) (json.RawMes
 	return result.Result, nil
 }
 func (b *Bot) Send(ctx context.Context, chatID int64, text string, keyboard any) error {
+	if _, private := groupScreenFromContext(ctx); private {
+		return b.sendGroupScreen(ctx, text, keyboard)
+	}
 	if keyboard == nil {
 		keyboard = homeMarkup()
 	}
@@ -816,6 +822,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return b.answerLocationInlineQuery(ctx, u.InlineQuery)
 	}
 	if u.Callback != nil {
+		if handled, err := b.groupCallback(ctx, u.Callback); handled { return err }
 		if u.Callback.Message != nil && u.Callback.Message.Chat.Type == "private" && u.Callback.Message.Chat.ID == u.Callback.From.ID && !strings.HasPrefix(u.Callback.Data, "adm:") {
 			b.observeVisitor(u.Callback.From, b.visitorCallbackAction(u.Callback.Data), false)
 		}
@@ -961,9 +968,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		return nil
 	}
 	m := u.Message
-	if m == nil || m.Chat.Type != "private" {
-		return nil
-	}
+	if m == nil { return nil }
+	if isGroupChat(m.Chat.Type) { return b.groupCommand(ctx, m) }
+	if m.Chat.Type != "private" { return nil }
 	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
 		if err := b.receiveAdminBackup(ctx, m.Chat.ID, m.From.ID, m.Document.FileID, m.Document.FileSize); err != nil {
 			return b.Send(ctx, m.Chat.ID, "Не удалось загрузить архив. Проверьте формат и повторите попытку.", nil)
@@ -1002,7 +1009,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	}
 	switch {
 	case cmd == "/version":
-		return b.Send(ctx, chatID, "Karty "+botVersion, markup([]Button{cabinetButton(), menuButton()}))
+		return b.Send(ctx, chatID, "Версия бота: "+botVersion, markup([]Button{cabinetButton(), menuButton()}))
 	case cmd == "/myrequests" || strings.EqualFold(input, "Мои заявки") || input == "📋 Мои заявки":
 		defer b.observeVisitor(m.From, "Мои заявки", false)
 		return b.showCabinet(ctx, chatID, m.From.ID)
@@ -1071,7 +1078,21 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 		}
 	}
 	switch cmd {
-	case "/start", "/help":
+	case "/start":
+		parts := strings.Fields(input)
+		if len(parts)>1 {
+			param := parts[1]
+			switch {
+			case param == "applications": return b.showCabinet(ctx,chatID,m.From.ID)
+			case param == "nearest": return b.requestLocation(ctx,chatID)
+			case param == "new_application": return b.openLead(ctx,chatID,m.From.ID,"menu","")
+			case strings.HasPrefix(param,"lead_"):
+				id:=strings.TrimPrefix(param,"lead_")
+				if catalog.ValidID(id) { return b.openLead(ctx,chatID,m.From.ID,"card",id) }
+			}
+		}
+		return b.welcome(ctx, chatID, m.From)
+	case "/help":
 		return b.welcome(ctx, chatID, m.From)
 	case "/list":
 		return b.showPage(ctx, chatID, 0)
@@ -1196,6 +1217,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	var identity user
 	if err := json.Unmarshal(me, &identity); err == nil {
 		b.botID = identity.ID
+		b.botUsername = identity.Username
 	}
 	nextExpiry := b.expireDueCases()
 	go b.runCaseExpiry(ctx, nextExpiry)

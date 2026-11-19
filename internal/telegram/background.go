@@ -22,6 +22,22 @@ func (b *Bot) configureTelegramMenu(ctx context.Context) {
 	if err != nil && ctx.Err() == nil {
 		log.Printf("Configure Telegram commands: %v", err)
 	}
+	// Group commands appear as private ephemeral commands in supported clients.
+	// This is separate from the personal command list.
+	_, err = b.call(ctx, "setMyCommands", map[string]any{
+		"scope": map[string]any{"type":"all_group_chats"},
+		"commands": []map[string]any{
+			{"command":"catalog","description":"Персональный каталог","is_ephemeral":true},
+			{"command":"find","description":"Поиск локаций","is_ephemeral":true},
+			{"command":"favorites","description":"Моё избранное","is_ephemeral":true},
+			{"command":"compare","description":"Сравнение","is_ephemeral":true},
+			{"command":"myrequests","description":"Мои заявки","is_ephemeral":true},
+			{"command":"map","description":"Карта локаций","is_ephemeral":true},
+		},
+	})
+	if err != nil && ctx.Err() == nil {
+		log.Printf("Configure private group commands: %v",err)
+	}
 	_, err = b.call(ctx, "setChatMenuButton", map[string]any{"menu_button": map[string]string{"type": "commands"}})
 	if err != nil && ctx.Err() == nil {
 		log.Printf("Configure Telegram menu: %v", err)

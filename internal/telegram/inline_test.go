@@ -69,58 +69,58 @@ func TestInlineFavoriteWithoutChatMessage(t *testing.T){
  if b.favorites.Contains(77,"001"){t.Fatal("inline favorite not removed")}
 }
 
+
 func TestInlineFavoriteChangesButtonLabel(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"clicked",Data:"fav:inline:001",From:user{ID:77},InlineMessageID:"inline-message-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
  if !b.favorites.Contains(77,"001"){t.Fatal("favorite not added")}
- if len(tr.calls)!=2 || tr.calls[0]!="/botTEST/editMessageReplyMarkup" || tr.calls[1]!="/botTEST/answerCallbackQuery" {
-  t.Fatalf("inline favorite did not update keyboard: %v",tr.calls)
+ if len(tr.calls)!=2||tr.calls[0]!="/botTEST/answerCallbackQuery"||tr.calls[1]!="/botTEST/sendMessage"{
+  t.Fatalf("shared inline card must not be edited: %v",tr.calls)
  }
+ if tr.payload["ephemeral_message_parameters"]==nil{t.Fatal("private result missing")}
  if err:=b.handle(context.Background(),update{InlineQuery:&inlineQuery{ID:"lookup2",From:user{ID:77},Query:"академика"}});err!=nil{t.Fatal(err)}
  results:=tr.payload["results"].([]any)
  kb,_:=json.Marshal(results[0].(map[string]any)["reply_markup"])
  if !strings.Contains(string(kb),"Убрать из избранного"){t.Fatalf("saved favorite not reflected in fresh results: %s",kb)}
 }
 
+
 func TestInlineNavigationOpensPersonalChat(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"nav",Data:"inline:nav:favorites",From:user{ID:77},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- // No extraneous "opened in your private chat" notification. Personal
- // favorites are delivered only to that user's private chat.
- if len(tr.calls)<2 || tr.calls[0]!="/botTEST/answerCallbackQuery" || tr.calls[len(tr.calls)-1]!="/botTEST/sendMessage"{
-  t.Fatalf("navigation should acknowledge silently and open private favorites: %v",tr.calls)
+ if len(tr.calls)!=2||tr.calls[0]!="/botTEST/answerCallbackQuery"||tr.calls[1]!="/botTEST/sendMessage"{
+  t.Fatalf("private ephemeral favorites missing: %v",tr.calls)
  }
- if tr.payload["chat_id"]!=float64(77) {
-  t.Fatalf("favorites sent outside personal chat: %+v",tr.payload)
+ if tr.payload["chat_id"]!=nil||tr.payload["ephemeral_message_parameters"]==nil{
+  t.Fatalf("favorites must only answer clicking user, not shared chat: %+v",tr.payload)
  }
 }
+
+
 func TestInlineMainMenuReplacesChosenResult(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"nav-menu",Data:"inline:nav:menu",From:user{ID:77,FirstName:"Иван"},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- if len(tr.calls)!=2 || tr.calls[0]!="/botTEST/answerCallbackQuery" || tr.calls[1]!="/botTEST/editMessageText" {
-  t.Fatalf("inline menu should edit the chosen card without a new message: %v",tr.calls)
+ if len(tr.calls)!=2||tr.calls[0]!="/botTEST/answerCallbackQuery"||tr.calls[1]!="/botTEST/sendMessage"{
+  t.Fatalf("inline menu must stay private: %v",tr.calls)
  }
- if tr.payload["inline_message_id"]!="inline-123" {t.Fatalf("wrong edited inline card: %+v",tr.payload)}
+ if tr.payload["inline_message_id"]!=nil||tr.payload["ephemeral_message_parameters"]==nil{
+  t.Fatalf("shared inline result edited: %+v",tr.payload)
+ }
  value,_:=tr.payload["text"].(string)
- if !strings.Contains(value,"Точки роста") {t.Fatalf("menu text not edited: %q",value)}
+ if !strings.Contains(value,"персональное меню"){t.Fatalf("missing private menu: %q",value)}
 }
+
 func TestInlineSearchTransitionUpdatesChosenResult(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"nav-search",Data:"search:catalog",From:user{ID:77},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- if len(tr.calls)!=2 || tr.calls[1]!="/botTEST/editMessageText" {
-  t.Fatalf("search menu should edit chosen result: %v",tr.calls)
+ if len(tr.calls)!=2||tr.calls[1]!="/botTEST/sendMessage" {
+  t.Fatalf("search must be private: %v",tr.calls)
  }
- keyboard,_:=tr.payload["reply_markup"].(map[string]any)
- rows,_:=keyboard["inline_keyboard"].([]any)
- if len(rows)!=2 {
-  t.Fatalf("search screen must have compact two-row keyboard: %+v",keyboard)
+ if tr.payload["ephemeral_message_parameters"]==nil||tr.payload["inline_message_id"]!=nil{
+  t.Fatalf("inline card was modified: %+v",tr.payload)
  }
- first,_:=rows[0].([]any)
- if len(first)!=2 {t.Fatalf("search and back should share row: %+v",first)}
- back,_:=first[1].(map[string]any)
- if back["callback_data"]!="page:0" {t.Fatalf("expected return to catalog: %+v",back)}
 }

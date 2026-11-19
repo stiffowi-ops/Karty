@@ -72,7 +72,8 @@ func TestInlineMenuMarkupHasNoVerboseNavConfirmation(t *testing.T) {
  b,tr:=makeInlineTestBot(t)
  cb:=&callbackQuery{ID:"x",Data:"inline:nav:menu",From:user{ID:77},InlineMessageID:"inline-123"}
  if err:=b.handle(context.Background(),update{Callback:cb});err!=nil{t.Fatal(err)}
- if len(tr.calls)!=2||tr.calls[0]!="/botTEST/answerCallbackQuery"||tr.calls[1]!="/botTEST/editMessageText" {t.Fatalf("navigation must reuse inline message: %v",tr.calls)}
+ if len(tr.calls)!=2||tr.calls[0]!="/botTEST/answerCallbackQuery"||tr.calls[1]!="/botTEST/sendMessage" {t.Fatalf("navigation must respond privately: %v",tr.calls)}
  raw,err:=json.Marshal(tr.payload);if err!=nil{t.Fatal(err)}
  if strings.Contains(string(raw),"Открыл в личном чате"){t.Fatal("obsolete notification must not be shown")}
+ if tr.payload["ephemeral_message_parameters"]==nil { t.Fatal("shared inline message exposed navigation") }
 }

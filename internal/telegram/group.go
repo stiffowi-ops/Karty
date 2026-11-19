@@ -434,16 +434,10 @@ func (b *Bot) groupDeepLink(start string) string {
 	return "https://t.me/"+username
 }
 
-// A single published keyboard can be pinned in a group by its administrators.
-// This command is restricted to configured administrators.
+// Only configured admins may publish or refresh the group assistant panel.
+// Its stable message id is persisted to avoid duplicate posts after restarts.
 func (b *Bot) publishGroupPanel(ctx context.Context, chatID int64) error {
-	_,err:=b.call(ctx,"sendMessage",map[string]any{
-		"chat_id":chatID,
-		"text":"🚀 <b>Новые точки роста для Вашего бизнеса</b>\n\nНайдите перспективную локацию для развития Вашего бизнеса. Изучайте предложения, сравнивайте варианты и выбирайте новые точки роста!",
-		"parse_mode":"HTML",
-		"reply_markup":markup([]Button{callbackButton("📍 Позвать помощника","grp:menu")}),
-	})
-	return err
+	return b.publishAndPinGroupPanel(ctx, chatID)
 }
 
 func (b *Bot) groupCommand(ctx context.Context, m *message) error {
@@ -454,7 +448,13 @@ func (b *Bot) groupCommand(ctx context.Context, m *message) error {
 	if at:=strings.IndexByte(cmd,'@');at>=0 {cmd=cmd[:at]}
 	if cmd=="/panel" {
 		if !b.isAdmin(m.From.ID) {return nil}
-		return b.publishGroupPanel(ctx,m.Chat.ID)
+		if err:=b.publishGroupPanel(ctx,m.Chat.ID);err!=nil{
+			log.Printf("Publish group panel in %d: %v",m.Chat.ID,err)
+			privateCtx:=withGroupScreen(ctx,groupScreen{chatID:m.Chat.ID,userID:m.From.ID,replyEphemeralID:m.EphemeralMessageID})
+			warn:="⚠️ Не удалось обновить или закрепить помощника. Проверьте, что у бота есть права администратора «Закреплять сообщения», затем повторите /panel."
+			if notifyErr:=b.Send(privateCtx,0,warn,nil);notifyErr!=nil{return fmt.Errorf("group panel: %w; private notification: %v",err,notifyErr)}
+		}
+		return nil
 	}
 	recognized:=cmd=="/catalog"||cmd=="/menu"||cmd=="/start"||cmd=="/list"||cmd=="/favorites"||cmd=="/find"||cmd=="/compare"||cmd=="/map"||cmd=="/myrequests"
 	if !recognized{return nil}

@@ -18,7 +18,9 @@ func (tr *inlineTransport) RoundTrip(req *http.Request)(*http.Response,error){
  raw,err:=io.ReadAll(req.Body);if err!=nil{return nil,err}
  tr.payload = make(map[string]any)
  if err=json.Unmarshal(raw,&tr.payload);err!=nil{return nil,err}
- return &http.Response{StatusCode:200,Body:io.NopCloser(strings.NewReader(`{"ok":true,"result":true}`)),Header:http.Header{"Content-Type":[]string{"application/json"}}},nil
+ result:=`true`
+ if strings.HasSuffix(req.URL.Path,"/sendMessage") {result=`{"message_id":900}`} 
+ return &http.Response{StatusCode:200,Body:io.NopCloser(strings.NewReader(`{"ok":true,"result":`+result+`}`)),Header:http.Header{"Content-Type":[]string{"application/json"}}},nil
 }
 func makeInlineTestBot(t *testing.T)(*Bot,*inlineTransport){
  t.Helper()

@@ -51,6 +51,9 @@ type Bot struct {
 	deliveryWake              chan struct{}
 	keyboardCleanup           chan int64
 	manualSync                sync.Mutex
+	groupPanelMu              sync.Mutex
+	groupPanelPath            string
+	groupPanelIDs             map[int64]int
 }
 type user struct {
 	ID        int64  `json:"id"`
@@ -161,6 +164,7 @@ func New(token, constructorID, dataDir string, store *catalog.Store, sy *syncer.
 		token: token, mapURL: mapURL, store: store, favorites: favorites, syncer: sy,
 		adminIDs: ids, leads: leads, metrics: metrics, visitors: visitors, http: &http.Client{Timeout: 50 * time.Second},
 		offsetFile:        filepath.Join(dataDir, "telegram-offset.txt"),
+		groupPanelPath:   filepath.Join(dataDir, "group_panels.json"),
 		compareSelections: make(map[int64][]string),
 		deliveryWake:      make(chan struct{}, 1),
 		keyboardCleanup:   make(chan int64, 64),

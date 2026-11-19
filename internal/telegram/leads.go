@@ -139,7 +139,7 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 		if d.Kind == "new" {
 			step, total = 3, 4
 		}
-		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\nУкажите <b>Ваш номер телефона</b> для связи.\nНомер должен начинаться с <b>+7</b> и содержать ещё <b>10 цифр</b>.\nНапример: <code>+7 999 123-45-67</code>.", step, total), markup(leadNav(true)...))
+		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\nУкажите <b>Ваш номер телефона</b> для связи.\nВведите <b>10 цифр, начиная с 9</b>. <b>+7</b> добавим автоматически.\nНапример: <code>999 123-45-67</code>.\nТакже можно указать номер с <b>+7</b> или <b>8</b>.", step, total), markup(leadNav(true)...))
 	case "choose", "search":
 		return b.showLeadLocations(ctx, chatID, userID, d)
 	case "location_confirm":
@@ -403,7 +403,7 @@ func (b *Bot) handleLeadText(ctx context.Context, chatID int64, from user, input
 	case "phone":
 		phone, ok := normalizeLeadPhone(input)
 		if !ok {
-			return true, b.Send(ctx, chatID, "Проверьте номер телефона. Он должен начинаться с <b>+7</b> и содержать ровно <b>10 цифр после +7</b>. Например: <code>+7 999 123-45-67</code>. Пробелы, скобки и дефисы допускаются.", markup(leadNav(true)...))
+			return true, b.Send(ctx, chatID, "Проверьте номер телефона. Введите <b>10 цифр, начиная с 9</b>, например <code>999 123-45-67</code>. <b>+7</b> добавим автоматически. Также принимаются номера с <b>+7</b> или <b>8</b>. Пробелы, скобки и дефисы допускаются.", markup(leadNav(true)...))
 		}
 		d.Phone = phone
 		if d.Source == "card" && d.SuggestedID != "" {
@@ -434,31 +434,34 @@ func (b *Bot) handleLeadText(ctx context.Context, chatID int64, from user, input
 	return true, b.showLead(ctx, chatID, from.ID, d)
 }
 
-// normalizeLeadPhone accepts Russian phone numbers only: +7 followed by
-// exactly 10 digits. Formatting separators are allowed but removed before
-// storage, so the client and all administrators see a consistent +7XXXXXXXXXX.
+// normalizeLeadPhone accepts Russian mobile numbers entered as 10 digits
+// starting with 9, or with a +7 / 8 prefix. Store all valid numbers as
+// +7XXXXXXXXXX so clients and administrators see the same format.
 func normalizeLeadPhone(value string) (string, bool) {
 	value = strings.TrimSpace(value)
-	if !strings.HasPrefix(value, "+7") {
-		return "", false
-	}
 	digits := make([]byte, 0, 11)
 	for i, r := range value {
 		switch {
 		case r >= '0' && r <= '9':
 			digits = append(digits, byte(r))
 		case r == '+' && i == 0:
-			// Allowed only as the initial country-code sign.
+			// The plus sign is only allowed before a +7 country code.
 		case r == ' ' || r == '-' || r == '(' || r == ')':
-			// Cosmetic separators don't count towards the phone length.
+			// Ignore formatting separators.
 		default:
 			return "", false
 		}
 	}
-	if len(digits) != 11 || digits[0] != '7' {
+	switch {
+	case len(digits) == 10 && digits[0] == '9' && !strings.HasPrefix(value, "+"):
+		return "+7" + string(digits), true
+	case len(digits) == 11 && digits[0] == '7' && digits[1] == '9' && strings.HasPrefix(value, "+7"):
+		return "+" + string(digits), true
+	case len(digits) == 11 && digits[0] == '8' && digits[1] == '9' && !strings.HasPrefix(value, "+"):
+		return "+7" + string(digits[1:]), true
+	default:
 		return "", false
 	}
-	return "+" + string(digits), true
 }
 
 func validLeadPhone(value string) bool {

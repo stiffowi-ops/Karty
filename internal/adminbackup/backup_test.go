@@ -160,3 +160,31 @@ func TestRestoreKeepsNewAdminHistory(t *testing.T) {
 		t.Fatalf("history lost: %s", merged)
 	}
 }
+
+func TestBackupOfDeletedLocationsDoesNotResurrectFromOlderArchive(t *testing.T) {
+	root:=t.TempDir()
+	customID:="custom-abcd1234"
+	custom:=catalog.Location{ID:customID,Title:"Новая точка"}
+	original:=[]catalog.Location{{ID:"020",Title:"Первая"},{ID:"021",Title:"Вторая"},custom}
+	rawCustom,err:=json.Marshal(map[string]catalog.Location{customID:custom})
+	if err!=nil{t.Fatal(err)}
+	if err=os.WriteFile(filepath.Join(root,catalog.AdminLocationsFilename),rawCustom,0600);err!=nil{t.Fatal(err)}
+	olderZIP,err:=Build(root,original)
+	if err!=nil{t.Fatal(err)}
+	older,err:=Examine(olderZIP)
+	if err!=nil{t.Fatal(err)}
+	if err=os.WriteFile(filepath.Join(root,catalog.DeletedLocationsFilename),[]byte(`{"020":true,"custom-abcd1234":true}`),0600);err!=nil{t.Fatal(err)}
+	visible:=[]catalog.Location{{ID:"021",Title:"Вторая"}}
+	newZIP,err:=Build(root,visible)
+	if err!=nil{t.Fatal(err)}
+	newArchive,err:=Examine(newZIP)
+	if err!=nil{t.Fatal(err)}
+	if newArchive.Inspect.Locations!=1{t.Fatalf("wrong visible count: %+v",newArchive.Inspect)}
+	if _,err=Restore(root,older,"cards",visible);err!=nil{t.Fatal(err)}
+	deleted,err:=catalog.ReadDeletedLocations(filepath.Join(root,catalog.DeletedLocationsFilename))
+	if err!=nil{t.Fatal(err)}
+	if !deleted["020"]||!deleted[customID]{t.Fatalf("old backup restored removed locations: %+v",deleted)}
+	if _,err=Restore(root,newArchive,"cards",visible);err!=nil{t.Fatal(err)}
+	deleted,err=catalog.ReadDeletedLocations(filepath.Join(root,catalog.DeletedLocationsFilename))
+	if err!=nil||!deleted["020"]||!deleted[customID]{t.Fatalf("new backup lost removals: %+v, %v",deleted,err)}
+}

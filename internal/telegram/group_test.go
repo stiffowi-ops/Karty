@@ -155,3 +155,23 @@ func TestSearchFirstLetterPrefixAndNoMatch(t *testing.T) {
 	if err:=b.groupSearchResults(ctx,"аяая",0,true);err!=nil{t.Fatal(err)}
 	if !strings.Contains(tr.payload["text"].(string),"Ничего не найдено"){t.Fatal(tr.payload)}
 }
+
+func TestGroupAssistantCopyKeepsPersonalScreensConcise(t *testing.T) {
+ b,tr:=makeInlineTestBot(t)
+ ctx:=withGroupScreen(context.Background(),groupScreen{chatID:-500,userID:77,callbackID:"go"})
+ for _, screen := range []func(context.Context) error{
+  b.groupMenu,
+  func(ctx context.Context) error {return b.groupCatalog(ctx,0)},
+  b.groupSearchMenu,
+  b.groupFavorites,
+  b.groupMap,
+ } {
+  if err:=screen(ctx);err!=nil{t.Fatal(err)}
+  message,_:=tr.payload["text"].(string)
+  for _,redundant:=range []string{"персональный экран","другие участники","только Вам","только для себя","не появятся в общей переписке"}{
+   if strings.Contains(message,redundant){t.Fatalf("redundant privacy warning %q: %s",redundant,message)}
+  }
+ }
+ if err:=b.groupMenu(ctx);err!=nil{t.Fatal(err)}
+ if message,_:=tr.payload["text"].(string);!strings.Contains(message,"Помощник по локациям"){t.Fatalf("assistant title missing: %s",message)}
+}

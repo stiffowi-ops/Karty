@@ -261,3 +261,29 @@ func TestLeadEmptyFavoritesDoesNotStartWizard(t *testing.T) {
 		t.Fatal("wizard started with no favorite locations")
 	}
 }
+
+func TestLeadHandoffKeepsLocationAndClearSubmissionResult(t *testing.T) {
+	b,tr:=makeLeadTestBot(t)
+	u:=user{ID:100,Username:"client"}
+	ctx:=context.Background()
+	if err:=b.startLead(ctx,u.ID,u.ID,"card","001");err!=nil{t.Fatal(err)}
+	look:=func(needle string){
+		t.Helper()
+		if len(tr.payloads)==0{t.Fatal("no screen sent")}
+		text,ok:=tr.payloads[len(tr.payloads)-1]["text"].(string)
+		if !ok || !strings.Contains(text,needle){t.Fatalf("expected %q in %+v",needle,tr.payloads[len(tr.payloads)-1])}
+	}
+	look("Метро Троицк")
+	if err:=b.handleLeadCallback(ctx,u.ID,u,"lead:kind:existing");err!=nil{t.Fatal(err)}
+	look("Метро Троицк")
+	if handled,err:=b.handleLeadText(ctx,u.ID,u,"Иван");!handled||err!=nil{t.Fatal(handled,err)}
+	look("Метро Троицк")
+	if handled,err:=b.handleLeadText(ctx,u.ID,u,"9991234567");!handled||err!=nil{t.Fatal(handled,err)}
+	look("Метро Троицк")
+	if err:=b.handleLeadCallback(ctx,u.ID,u,"lead:confirm");err!=nil{t.Fatal(err)}
+	look("Последний шаг")
+	if err:=b.handleLeadCallback(ctx,u.ID,u,"lead:submit");err!=nil{t.Fatal(err)}
+	look("Заявка №0001 отправлена!")
+	look("Метро Троицк")
+	look("Мои заявки")
+}

@@ -91,7 +91,7 @@ func (b *Bot) groupMenu(ctx context.Context) error {
 		{callbackButton("🗺 Общая карта","grp:map"),callbackButton("📂 Мои заявки","grp:requests")},
 		{callbackButton("📝 Оставить заявку","grp:lead:menu"),callbackButton("📍 Рядом со мной","grp:near")},
 	}
-	return b.Send(ctx, 0, "👋 <b>Ваше персональное меню локаций</b>\n\nВы видите этот экран только для себя. Список, избранное и сравнение не показываются остальным участникам группы.\n\nДля заявок и передачи телефона откроется личный чат с ботом.", markup(rows...))
+	return b.Send(ctx, 0, "👋 <b>Помощник по локациям</b>\n\nВыберите нужный раздел. Для оформления заявки откроется личный чат с ботом.", markup(rows...))
 }
 func (b *Bot) groupCatalog(ctx context.Context, page int) error {
 	items := sortedStations(b.store.List())
@@ -111,7 +111,7 @@ func (b *Bot) groupCatalog(ctx context.Context, page int) error {
 	if len(navigation)>0 { rows=append(rows,navigation) }
 	rows=append(rows,[]Button{callbackButton("🔎 Поиск","grp:search"),callbackButton("⭐ Избранное","grp:favorites")})
 	rows=append(rows,[]Button{callbackButton("🏠 Меню","grp:menu")})
-	return b.Send(ctx,0,fmt.Sprintf("📍 <b>Каталог локаций</b>\n\nВыберите точку. Это персональный экран, другие участники не увидят Ваш выбор.\n\nСтраница %d из %d",page+1,last+1),markup(rows...))
+	return b.Send(ctx,0,fmt.Sprintf("📍 <b>Каталог локаций</b>\n\nВыберите интересующую локацию.\n\nСтраница %d из %d",page+1,last+1),markup(rows...))
 }
 // A compact overview is the default; details remain one tap away.
 func groupCardSummary(raw catalog.Location) string {
@@ -220,7 +220,7 @@ func (b *Bot) groupFavorites(ctx context.Context) error {
 	}
 	rows=append(rows,[]Button{callbackButton("⚖️ Сравнить","grp:compare"),callbackButton("📍 Каталог","grp:list:0")})
 	rows=append(rows,[]Button{callbackButton("🏠 Меню","grp:menu")})
-	return b.Send(ctx,0,fmt.Sprintf("⭐ <b>Моё избранное</b> · %d\n\nЭти сохранения видны только Вам.",len(items)),markup(rows...))
+	return b.Send(ctx,0,fmt.Sprintf("⭐ <b>Моё избранное</b> · %d\n\nВыберите сохранённую локацию или сравните варианты.",len(items)),markup(rows...))
 }
 
 // Offer useful filters before the alphabet. Every result is private and
@@ -246,7 +246,7 @@ func (b *Bot) groupSearchMenu(ctx context.Context) error {
 		[]Button{callbackButton("🔠 По первой букве", "grp:letters"), callbackButton("📋 Весь каталог", "grp:list:0")},
 		[]Button{callbackButton("⭐ Избранное", "grp:favorites"), callbackButton("🏠 Меню", "grp:menu")},
 	)
-	return b.Send(ctx,0,"🔎 <b>Поиск локаций</b>\n\nВыберите тип локации или первую букву названия. Результаты откроются только Вам.\n\nЕсли нужной точки нет, можно воспользоваться командой <code>/find название</code> через приватный интерфейс команд Telegram. Не отправляйте запрос обычным сообщением в группу.",markup(rows...))
+	return b.Send(ctx,0,"🔎 <b>Поиск локаций</b>\n\nВыберите тип локации или первую букву названия. Для поиска по части названия можно написать боту в личном чате.",markup(rows...))
 }
 func (b *Bot) groupSearchLetters(ctx context.Context) error {
 	letters:=[]string{"А","Б","В","Г","Д","Е","Ж","З","И","К","Л","М","Н","О","П","Р","С","Т","У","Ф","Х","Ц","Ч","Ш","Щ","Э","Ю","Я"}
@@ -439,9 +439,9 @@ func (b *Bot) groupDeepLink(start string) string {
 func (b *Bot) publishGroupPanel(ctx context.Context, chatID int64) error {
 	_,err:=b.call(ctx,"sendMessage",map[string]any{
 		"chat_id":chatID,
-		"text":"📍 <b>Каталог локаций</b>\n\nВы можете изучать локации, сравнивать их и сохранять в избранное. Нажмите кнопку, чтобы открыть персональное меню: Ваши действия не появятся в общей переписке.",
+		"text":"📍 <b>Помощник по локациям</b>\n\nНайдите интересующую локацию, посмотрите подробности, сохраните её в избранное или оставьте заявку.",
 		"parse_mode":"HTML",
-		"reply_markup":markup([]Button{callbackButton("📍 Открыть персональное меню","grp:menu")}),
+		"reply_markup":markup([]Button{callbackButton("📍 Позвать помощника","grp:menu")}),
 	})
 	return err
 }
@@ -476,7 +476,7 @@ func (b *Bot) groupCommand(ctx context.Context, m *message) error {
 	return nil
 }
 func (b *Bot) groupMap(ctx context.Context) error {
-	return b.Send(ctx,0,"🗺 <b>Общая карта локаций</b>\n\nОткройте карту по кнопке. Другие участники группы не увидят это действие.",markup(
+	return b.Send(ctx,0,"🗺 <b>Общая карта локаций</b>\n\nОткройте карту по кнопке.",markup(
 		[]Button{urlButton("🗺 Открыть карту",b.mapURL)},
 		[]Button{callbackButton("🏠 Меню","grp:menu")},
 	))

@@ -27,12 +27,7 @@ func (b *Bot) configureTelegramMenu(ctx context.Context) {
 	_, err = b.call(ctx, "setMyCommands", map[string]any{
 		"scope": map[string]any{"type":"all_group_chats"},
 		"commands": []map[string]any{
-			{"command":"catalog","description":"Персональный каталог","is_ephemeral":true},
-			{"command":"find","description":"Поиск локаций","is_ephemeral":true},
-			{"command":"favorites","description":"Моё избранное","is_ephemeral":true},
-			{"command":"compare","description":"Сравнение","is_ephemeral":true},
-			{"command":"myrequests","description":"Мои заявки","is_ephemeral":true},
-			{"command":"map","description":"Карта локаций","is_ephemeral":true},
+			{"command":"catalog","description":"Позвать помощника","is_ephemeral":true},
 		},
 	})
 	if err != nil && ctx.Err() == nil {

@@ -16,9 +16,9 @@ func TestGroupPanelAndPrivateMenuIsolation(t *testing.T) {
 	if err:=b.handle(ctx,update{Message:&message{Chat:groupChat,From:user{ID:77},Text:"/panel"}});err!=nil{t.Fatal(err)}
 	if len(tr.calls)!=0 {t.Fatalf("non-admin posted group panel: %v",tr.calls)}
 	if err:=b.handle(ctx,update{Message:&message{Chat:groupChat,From:user{ID:1},Text:"/panel"}});err!=nil{t.Fatal(err)}
-	if len(tr.calls)!=1||tr.calls[0]!="/botTEST/sendMessage" {t.Fatalf("admin panel missing: %v",tr.calls)}
-	panel:=tr.payload
-	if _,ephemeral:=panel["ephemeral_message_parameters"];ephemeral{t.Fatal("admin panel must be public")}
+	if len(tr.calls)!=3||tr.calls[0]!="/botTEST/getChat"||tr.calls[1]!="/botTEST/sendMessage"||tr.calls[2]!="/botTEST/pinChatMessage" {t.Fatalf("admin auto-pin missing: %v",tr.calls)}
+	panel:=map[string]any{"text":groupPanelText}
+	if tr.payload["chat_id"]!=float64(-500)||tr.payload["message_id"]!=float64(900) {t.Fatalf("wrong pin target: %+v",tr.payload)}
 	panelText,ok:=panel["text"].(string)
 	if !ok || !strings.Contains(panelText,"Новые точки роста для Вашего бизнеса") || !strings.Contains(panelText,"Найдите перспективную локацию для развития Вашего бизнеса") {
 		t.Fatalf("new group invitation missing: %q",panelText)
@@ -27,7 +27,7 @@ func TestGroupPanelAndPrivateMenuIsolation(t *testing.T) {
 		ID:"private-menu",Data:"grp:menu",From:user{ID:77},
 		Message:&message{MessageID:123,Chat:groupChat},
 	}});err!=nil{t.Fatal(err)}
-	if len(tr.calls)!=3||tr.calls[1]!="/botTEST/answerCallbackQuery"||tr.calls[2]!="/botTEST/sendMessage" {
+	if len(tr.calls)!=5||tr.calls[3]!="/botTEST/answerCallbackQuery"||tr.calls[4]!="/botTEST/sendMessage" {
 		t.Fatalf("wrong callback flow: %v",tr.calls)
 	}
 	out:=tr.payload

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"

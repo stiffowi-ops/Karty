@@ -97,3 +97,61 @@ func TestGroupEphemeralTransportNeverFallsBackToPublic(t *testing.T){
 	params:=tr.payload["ephemeral_message_parameters"].(map[string]any)
 	if params["receiver_user_id"]!=float64(77){t.Fatal("no recipient")}
 }
+
+func TestGroupServiceSearchFiltersAndCompactCard(t *testing.T) {
+	b,tr:=makeInlineTestBot(t)
+	b.botUsername="service_bot"
+	ctx:=context.Background()
+	kind:=chat{ID:-500,Type:"supergroup"}
+	callback:=func(data string) {
+		t.Helper()
+		cb:=&callbackQuery{ID:"choice",Data:data,From:user{ID:77},Message:&message{MessageID:345,Chat:kind}}
+		if err:=b.handle(ctx,update{Callback:cb});err!=nil{t.Fatal(err)}
+		if tr.calls[len(tr.calls)-1]!="/botTEST/sendMessage"{t.Fatalf("must answer privately: %v",tr.calls)}
+		if tr.payload["ephemeral_message_parameters"]==nil{t.Fatal("missing private recipient")}
+	}
+	callback("grp:search")
+	result:=tr.payload["reply_markup"].(map[string]any)
+	kb,_:=json.Marshal(result)
+	if !strings.Contains(string(kb),"grp:filter:metro:0") || !strings.Contains(string(kb),"grp:letters") {
+		t.Fatalf("search filters missing: %s",kb)
+	}
+	callback("grp:filter:metro:0")
+	txt:=tr.payload["text"].(string)
+	if !strings.Contains(txt,"Станции метро") {t.Fatal(txt)}
+	callback("grp:letters")
+	callback("grp:search:а:0")
+	txt=tr.payload["text"].(string)
+	if !strings.Contains(txt,"Метро Академика") { // list contains matching button text not necessarily in body
+		keyboard,_:=json.Marshal(tr.payload["reply_markup"])
+		if !strings.Contains(string(keyboard),"grp:loc:001") {t.Fatalf("letter search failed: %s",keyboard)}
+	}
+	callback("grp:loc:001:0")
+	txt=tr.payload["text"].(string)
+	if !strings.Contains(txt,"Кратко о локации") || strings.Contains(txt,"Почему именно здесь") {
+		t.Fatalf("location preview is not concise: %s",txt)
+	}
+	keyboard,_:=json.Marshal(tr.payload["reply_markup"])
+	if !strings.Contains(string(keyboard),"grp:detail:001:0") || !strings.Contains(string(keyboard),"grp:lead:001") || !strings.Contains(string(keyboard),"Показать на карте") {
+		t.Fatalf("card actions missing: %s",keyboard)
+	}
+	callback("grp:detail:001:0")
+	txt=tr.payload["text"].(string)
+	if !strings.Contains(txt,"Трафик и локация") {t.Fatalf("details not shown: %s",txt)}
+	callback("grp:lead:001")
+	txt=tr.payload["text"].(string)
+	if !strings.Contains(txt,"Метро Академика") || !strings.Contains(txt,"повторно искать") {
+		t.Fatalf("selected location not carried into handoff: %s",txt)
+	}
+	keyboard,_=json.Marshal(tr.payload["reply_markup"])
+	if !strings.Contains(string(keyboard),"start=lead_001") {t.Fatalf("handoff lost chosen station: %s",keyboard)}
+}
+func TestSearchFirstLetterPrefixAndNoMatch(t *testing.T) {
+	b,tr:=makeInlineTestBot(t)
+	ctx:=withGroupScreen(context.Background(),groupScreen{chatID:-500,userID:77,callbackID:"x"})
+	if err:=b.groupSearchResults(ctx,"а",0,true);err!=nil{t.Fatal(err)}
+	raw,_:=json.Marshal(tr.payload["reply_markup"])
+	if !strings.Contains(string(raw),"grp:prefix:ак:0") {t.Fatalf("missing second-letter refinement: %s",raw)}
+	if err:=b.groupSearchResults(ctx,"аяая",0,true);err!=nil{t.Fatal(err)}
+	if !strings.Contains(tr.payload["text"].(string),"Ничего не найдено"){t.Fatal(tr.payload)}
+}

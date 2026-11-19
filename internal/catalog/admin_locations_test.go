@@ -82,3 +82,28 @@ func TestAdminLocationValidationDoesNotModifyLiveCatalog(t *testing.T) {
 		t.Fatalf("unexpected runtime file for invalid drafts: %v", err)
 	}
 }
+
+func TestAdminLocationDeletionPersistsAndCanBeRestored(t *testing.T) {
+	root:=t.TempDir()
+	seed:=filepath.Join(root,"seed.json")
+	if err:=os.WriteFile(seed,[]byte(`[{"id":"020","title":"Базовая"},{"id":"021","title":"Вторая"}]`),0600);err!=nil{t.Fatal(err)}
+	s,err:=New(root,seed,filepath.Join(root,"overrides.json"))
+	if err!=nil{t.Fatal(err)}
+	id,err:=NewAdminLocationID()
+	if err!=nil{t.Fatal(err)}
+	if err=s.CreateAdminLocation(Location{ID:id,Title:"Добавленная"});err!=nil{t.Fatal(err)}
+	for _,removed:=range []string{"020",id} {
+		if err=s.SetDeletedLocation(removed,true);err!=nil{t.Fatal(err)}
+		if _,ok:=s.Find(removed);ok{t.Fatalf("deleted location %s is public",removed)}
+	}
+	if err=s.Reload();err!=nil{t.Fatal(err)}
+	restarted,err:=New(root,seed,filepath.Join(root,"overrides.json"))
+	if err!=nil{t.Fatal(err)}
+	if len(restarted.List())!=1{t.Fatalf("expected only 021, got %+v",restarted.List())}
+	if err=restarted.SetDeletedLocation("020",true);err==nil{t.Fatal("double deletion accepted")}
+	if err=restarted.SetDeletedLocation("020",false);err!=nil{t.Fatal(err)}
+	if err=restarted.SetDeletedLocation(id,false);err!=nil{t.Fatal(err)}
+	if _,ok:=restarted.Find(id);!ok{t.Fatal("restored custom location lost")}
+	if _,ok:=restarted.Find("020");!ok{t.Fatal("restored base location lost")}
+	if err=restarted.SetDeletedLocation("021",false);err==nil{t.Fatal("restored a never-deleted location")}
+}

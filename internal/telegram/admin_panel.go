@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func (b *Bot) adminHomeMarkup(mapURL string, userID int64) any {
 }
 
 func (b *Bot) showAdminMenu(ctx context.Context, chatID int64) error {
-	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать и добавлять локации, управлять заявками, просматривать аналитику и посетителей без заявки, работать с резервными копиями и настройками."
+	msg := "⚙️ <b>Панель управления</b>\n\nЗдесь можно редактировать, добавлять и удалять локации, управлять заявками, просматривать аналитику и посетителей без заявки, работать с резервными копиями и настройками."
 	return b.Send(ctx, chatID, msg, markup(
 		[]Button{callbackButton("📊 Аналитика", "adm:stats:views:30"), callbackButton("📍 Локации", "adm:locations:0")},
 		[]Button{callbackButton("📨 Заявки", "adm:leads"), callbackButton("👥 Посетители", "adm:visitors")},
@@ -280,8 +281,60 @@ func (b *Bot) showAdminLocations(ctx context.Context, chatID int64, page int) er
 		rows = append(rows, nav)
 	}
 	rows = append(rows, []Button{callbackButton("🔎 Найти локацию", "adm:locsearch"), callbackButton("➕ Добавить локацию", "adm:new")})
+	rows = append(rows, []Button{callbackButton("🗑 Удалённые локации", "adm:deleted:0")})
 	rows = append(rows, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
 	return b.Send(ctx, chatID, fmt.Sprintf("📍 <b>Редактор локаций</b>\nСтраница %d из %d. Выберите карточку для редактирования:", page+1, pages), markup(rows...))
+}
+
+func (b *Bot) showDeletedAdminLocations(ctx context.Context, chatID int64, page int) error {
+    deleted, err := catalog.ReadDeletedLocations(b.store.DeletedLocationsPath())
+    if err != nil { return err }
+    ids := make([]string, 0, len(deleted))
+    for id := range deleted { ids = append(ids, id) }
+    sort.Strings(ids)
+    pages := (len(ids)+9)/10
+    if pages == 0 { pages = 1 }
+    if page < 0 { page = 0 }
+    if page >= pages { page = pages-1 }
+    rows := [][]Button{}
+    for _, id := range ids[page*10:min((page+1)*10,len(ids))] {
+        rows = append(rows, []Button{callbackButton("♻️ Восстановить "+limitRunes(id, 32), "adm:restorelocask:"+id)})
+    }
+    nav := []Button{}
+    if page > 0 { nav=append(nav, callbackButton("◀️",fmt.Sprintf("adm:deleted:%d",page-1))) }
+    if page+1 < pages { nav=append(nav,callbackButton("▶️",fmt.Sprintf("adm:deleted:%d",page+1))) }
+    if len(nav)>0 { rows=append(rows,nav) }
+    rows=append(rows,[]Button{callbackButton("⬅️ К локациям","adm:locations:0")})
+    return b.Send(ctx,chatID,fmt.Sprintf("🗑 <b>Удалённые локации</b>\nВсего: %d · Страница %d из %d\n\nКарточки скрыты от клиентов, но их можно восстановить.",len(ids),page+1,pages),markup(rows...))
+}
+
+func (b *Bot) changeDeletedAdminLocation(ctx context.Context, chatID,userID int64,id string,deleted bool) error {
+    if !catalog.ValidID(id) { return nil }
+    b.backupMu.Lock()
+    snapshot,err:=b.snapshotBackup()
+    if err==nil { _,err=adminbackup.Examine(snapshot) }
+    if err==nil {
+        path:=filepath.Join(b.autoBackupDirectory(),"pre-location-change-"+time.Now().UTC().Format("20060102-150405.000000000")+".zip")
+        err=atomicAdminFile(path,snapshot)
+    }
+    if err!=nil { b.backupMu.Unlock(); return b.Send(ctx,chatID,"❌ Не удалось сохранить защитный бэкап: "+html.EscapeString(err.Error()),nil) }
+    err=b.store.SetDeletedLocation(id,deleted)
+    if err!=nil { b.backupMu.Unlock(); return b.Send(ctx,chatID,"❌ Не удалось изменить локацию: "+html.EscapeString(err.Error()),nil) }
+    after,e:=b.snapshotBackup()
+    if e==nil { _,e=adminbackup.Examine(after) }
+    if e==nil {
+        path:=filepath.Join(b.autoBackupDirectory(),"location-change-"+time.Now().UTC().Format("20060102-150405.000000000")+".zip")
+        e=atomicAdminFile(path,after)
+    }
+    b.backupMu.Unlock()
+    sess:=b.adminSession(userID)
+    sess.Field=""
+    sess.LocationID=""
+    if e!=nil { return b.Send(ctx,chatID,"⚠️ Каталог изменён, но новый бэкап не сохранился: "+html.EscapeString(e.Error()),markup([]Button{callbackButton("📦 Бэкапы","adm:backup")})) }
+    if deleted {
+        return b.Send(ctx,chatID,"✅ <b>Локация удалена из каталога.</b>\n\nОна больше не видна клиентам. История заявок сохранена, резервная копия обновлена.",markup([]Button{callbackButton("🗑 Удалённые","adm:deleted:0"),callbackButton("📍 Локации","adm:locations:0")}))
+    }
+    return b.Send(ctx,chatID,"✅ <b>Локация восстановлена.</b>\n\nОна снова доступна клиентам, резервная копия обновлена.",markup([]Button{callbackButton("✏️ Редактировать","adm:edit:"+id),callbackButton("📍 Локации","adm:locations:0")}))
 }
 
 // A new location is an unpublished draft until the administrator confirms it.
@@ -375,6 +428,9 @@ func (b *Bot) showAdminEditor(ctx context.Context, chatID int64, s *adminSession
 		publish = "✅ Добавить локацию"
 	} else {
 		rows = append(rows, []Button{callbackButton("📊 Показатели", "adm:insight:"+s.LocationID+":30"), callbackButton("🕘 История", "adm:histloc:"+s.LocationID)})
+	}
+	if !s.CreatingLocation {
+		rows = append(rows, []Button{callbackButton("🗑 Удалить локацию", "adm:deleteask:"+s.LocationID)})
 	}
 	rows = append(rows,
 		[]Button{callbackButton("👁 Предпросмотр", "adm:preview"), callbackButton(publish, "adm:publish")},
@@ -766,7 +822,7 @@ func (b *Bot) showBackupMenu(ctx context.Context, chatID int64) error {
 	if len(list) > 0 {
 		last = strings.TrimSuffix(strings.TrimPrefix(list[len(list)-1], "auto-"), ".zip")
 	}
-	info := fmt.Sprintf("📦 <b>Резервные копии</b>\n\nЕжедневный бэкап: 03:00 UTC\nХраним последние %d архивов на сервере.\nПоследняя копия: <b>%s</b>\n\nАрхив содержит заявки, карточки и избранное. Отправляйте ZIP только администраторам.", automaticBackupKeep, last)
+	info := fmt.Sprintf("📦 <b>Резервные копии</b>\n\nЕжедневный бэкап: 03:00 UTC\nХраним последние %d архивов на сервере.\nПоследняя копия: <b>%s</b>\n\nАрхив содержит заявки, карточки, избранное и отметки об удалённых локациях. Отправляйте ZIP только администраторам.", automaticBackupKeep, last)
 	return b.Send(ctx, chatID, info, markup(
 		[]Button{callbackButton("📥 Скачать свежий ZIP", "adm:export")},
 		[]Button{callbackButton("📥 Скачать последний авто ZIP", "adm:exportauto")},
@@ -1150,6 +1206,31 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 			page = 0
 		}
 		return b.showAdminLocations(ctx, chatID, page)
+    case strings.HasPrefix(data,"adm:deleted:"):
+        page,err:=strconv.Atoi(strings.TrimPrefix(data,"adm:deleted:"))
+        if err!=nil { page=0 }
+        return b.showDeletedAdminLocations(ctx,chatID,page)
+    case strings.HasPrefix(data,"adm:deleteask:"):
+        id:=strings.TrimPrefix(data,"adm:deleteask:")
+        loc,ok:=b.store.Find(id)
+        if !ok { return b.Send(ctx,chatID,"Локация уже удалена или не найдена.",markup([]Button{callbackButton("📍 Локации","adm:locations:0")})) }
+        return b.Send(ctx,chatID,"⚠️ <b>Удалить локацию?</b>\n\n"+html.EscapeString(loc.Title)+"\nID: <code>"+html.EscapeString(id)+"</code>\n\nКарточка исчезнет из каталога. История заявок сохранится. Будут созданы бэкапы до и после изменения.",markup(
+            []Button{callbackButton("🗑 Да, удалить","adm:deleteapply:"+id)},
+            []Button{callbackButton("❌ Отмена","adm:edit:"+id)},
+        ))
+    case strings.HasPrefix(data,"adm:deleteapply:"):
+        return b.changeDeletedAdminLocation(ctx,chatID,from.ID,strings.TrimPrefix(data,"adm:deleteapply:"),true)
+    case strings.HasPrefix(data,"adm:restorelocask:"):
+        id:=strings.TrimPrefix(data,"adm:restorelocask:")
+        deleted,err:=catalog.ReadDeletedLocations(b.store.DeletedLocationsPath())
+        if err!=nil { return err }
+        if !deleted[id] { return b.showDeletedAdminLocations(ctx,chatID,0) }
+        return b.Send(ctx,chatID,"♻️ <b>Восстановить локацию?</b>\n\nID: <code>"+html.EscapeString(id)+"</code>",markup(
+            []Button{callbackButton("✅ Да, восстановить","adm:restorelocapply:"+id)},
+            []Button{callbackButton("❌ Отмена","adm:deleted:0")},
+        ))
+    case strings.HasPrefix(data,"adm:restorelocapply:"):
+        return b.changeDeletedAdminLocation(ctx,chatID,from.ID,strings.TrimPrefix(data,"adm:restorelocapply:"),false)
 	case data == "adm:new":
 		return b.startAdminNewLocation(ctx, chatID, from.ID)
 	case strings.HasPrefix(data, "adm:edit:"):

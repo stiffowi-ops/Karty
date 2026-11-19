@@ -110,7 +110,7 @@ func TestInlineMainMenuReplacesChosenResult(t *testing.T) {
   t.Fatalf("shared inline result edited: %+v",tr.payload)
  }
  value,_:=tr.payload["text"].(string)
- if !strings.Contains(value,"персональное меню"){t.Fatalf("missing private menu: %q",value)}
+ if !strings.Contains(value,"Помощник по локациям"){t.Fatalf("missing private menu: %q",value)}
 }
 
 func TestInlineSearchTransitionUpdatesChosenResult(t *testing.T) {

@@ -326,8 +326,8 @@ func (b *Bot) groupRenderSearchResults(ctx context.Context, title string, matche
 		}
 	}
 	nav:=[]Button{}
-	if page>0 {nav=append(nav,callbackButton("◀️ Назад",paging+strconv.Itoa(page-1)))}
-	if page<last {nav=append(nav,callbackButton("Далее ▶️",paging+strconv.Itoa(page+1)))}
+	if page>0 && paging!="" {nav=append(nav,callbackButton("◀️ Назад",paging+strconv.Itoa(page-1)))}
+	if page<last && paging!="" {nav=append(nav,callbackButton("Далее ▶️",paging+strconv.Itoa(page+1)))}
 	if len(nav)>0{rows=append(rows,nav)}
 	rows=append(rows,[]Button{callbackButton("🔎 Другой фильтр","grp:search"),callbackButton("🏠 Меню","grp:menu")})
 	return b.Send(ctx,0,fmt.Sprintf("<b>%s</b>\n\nНайдено: %d · Страница %d из %d\n%s",html.EscapeString(title),len(matches),page+1,last+1,func()string{if utf8.RuneCountInString(prefix)==1{return "Уточните второй буквой или выберите локацию."};return "Выберите интересующую локацию."}()),markup(rows...))

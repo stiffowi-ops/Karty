@@ -112,7 +112,19 @@ func leadNav(back bool) [][]Button {
 	return append(rows, []Button{callbackButton("❌ Отменить заявку", "lead:cancel")})
 }
 
+// Keep the selected location visible throughout the personal application.
+// A lead coming from a group keeps SuggestedID across all form steps.
+func (b *Bot) leadLocationContext(d leadDraft) string {
+	if d.Source != "card" || !catalog.ValidID(d.SuggestedID) || b.store == nil {
+		return ""
+	}
+	loc, found := b.store.Find(d.SuggestedID)
+	if !found { return "" }
+	return "📍 <b>Выбрана локация:</b> " + html.EscapeString(publicText(loc.Title)) + "\n\n"
+}
+
 func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) error {
+	locationContext:=b.leadLocationContext(d)
 	switch d.Stage {
 	case "reuse":
 		text := "📝 <b>Новое обращение</b>\n\nИспользовать контактные данные предыдущего обращения?\n\n<b>Имя:</b> " + html.EscapeString(d.Name) + "\n<b>Телефон:</b> " + html.EscapeString(d.Phone)
@@ -121,25 +133,25 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 		}
 		return b.Send(ctx, chatID, text, markup([]Button{callbackButton("✅ Использовать данные", "lead:reuse")}, []Button{callbackButton("✏️ Заполнить заново", "lead:fresh")}, []Button{callbackButton("❌ Отменить", "lead:cancel")}))
 	case "kind":
-		return b.Send(ctx, chatID, "📝 <b>Оставить заявку</b>\n\nДля начала уточним один момент: Вы уже сотрудничаете с нами?", markup(
+		return b.Send(ctx, chatID, "📝 <b>Оставить заявку</b>\n\n"+locationContext+"<b>Шаг 1: тип сотрудничества.</b>\n\nДля начала уточним один момент: Вы уже сотрудничаете с нами?", markup(
 			[]Button{callbackButton("🤝 Уже работаю с Вами", "lead:kind:existing")},
 			[]Button{callbackButton("🚀 Хочу работать с Вами", "lead:kind:new")},
 			[]Button{callbackButton("❌ Отменить", "lead:cancel")},
 		))
 	case "company":
-		return b.Send(ctx, chatID, "📝 <b>Шаг 1 из 4</b>\n\nУкажите, пожалуйста, <b>полное название Вашего юридического лица</b>.\n\nНапишите название ответным сообщением.", markup(leadNav(true)...))
+		return b.Send(ctx, chatID, "📝 <b>Шаг 1 из 4</b>\n\n"+locationContext+"Укажите, пожалуйста, <b>полное название Вашего юридического лица</b>.\n\nНапишите название ответным сообщением.", markup(leadNav(true)...))
 	case "name":
 		step, total := 1, 3
 		if d.Kind == "new" {
 			step, total = 2, 4
 		}
-		return b.Send(ctx, chatID, fmt.Sprintf("📝 <b>Шаг %d из %d</b>\n\nКак к Вам обращаться? Напишите, пожалуйста, <b>Ваше имя</b>.", step, total), markup(leadNav(true)...))
+		return b.Send(ctx, chatID, fmt.Sprintf("📝 <b>Шаг %d из %d</b>\n\n%sКак к Вам обращаться? Напишите, пожалуйста, <b>Ваше имя</b>.", step, total, locationContext), markup(leadNav(true)...))
 	case "phone":
 		step, total := 2, 3
 		if d.Kind == "new" {
 			step, total = 3, 4
 		}
-		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\nУкажите <b>Ваш номер телефона</b> для связи.\nВведите <b>10 цифр, начиная с 9</b>. <b>+7</b> добавим автоматически.\nНапример: <code>999 123-45-67</code>.\nТакже можно указать номер с <b>+7</b> или <b>8</b>.", step, total), markup(leadNav(true)...))
+		return b.Send(ctx, chatID, fmt.Sprintf("📱 <b>Шаг %d из %d</b>\n\n%sУкажите <b>Ваш номер телефона</b> для связи.\nВведите <b>10 цифр, начиная с 9</b>. <b>+7</b> добавим автоматически.\nНапример: <code>999 123-45-67</code>.\nТакже можно указать номер с <b>+7</b> или <b>8</b>.", step, total, locationContext), markup(leadNav(true)...))
 	case "choose", "search":
 		return b.showLeadLocations(ctx, chatID, userID, d)
 	case "location_confirm":
@@ -147,7 +159,7 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 		if !ok {
 			return b.Send(ctx, chatID, "Локация больше не доступна. Пожалуйста, выберите другую.", markup([]Button{callbackButton("🔎 Выбрать локацию", "lead:change")}))
 		}
-		return b.Send(ctx, chatID, "📍 <b>Подтверждение локации</b>\n\nВас интересует локация:\n\n<b>"+html.EscapeString(publicText(loc.Title))+"</b>?", markup(
+		return b.Send(ctx, chatID, "📍 <b>Локация выбрана</b>\n\n<b>"+html.EscapeString(publicText(loc.Title))+"</b>\n\nПодтвердите выбранную точку, чтобы проверить заявку перед отправкой.", markup(
 			[]Button{callbackButton("✅ Подтвердить", "lead:confirm")},
 			[]Button{callbackButton("🔄 Сменить локацию", "lead:change")},
 			[]Button{callbackButton("⬅️ Назад", "lead:back"), callbackButton("❌ Отменить", "lead:cancel")},
@@ -162,15 +174,15 @@ func (b *Bot) showLead(ctx context.Context, chatID, userID int64, d leadDraft) e
 			clientType = "Хочу работать с Вами"
 		}
 		var details strings.Builder
-		details.WriteString("✅ <b>Проверьте Вашу заявку</b>\n\n")
-		details.WriteString("<b>Статус:</b> " + clientType + "\n")
+		details.WriteString("✅ <b>Последний шаг: проверьте заявку</b>\n\n")
+		details.WriteString("<b>Тип сотрудничества:</b> " + clientType + "\n")
 		if d.Kind == "new" {
 			details.WriteString("<b>Юридическое лицо:</b> " + html.EscapeString(d.Company) + "\n")
 		}
 		details.WriteString("<b>Имя:</b> " + html.EscapeString(d.Name) + "\n")
 		details.WriteString("<b>Телефон:</b> " + html.EscapeString(d.Phone) + "\n")
 		details.WriteString("<b>Локация:</b> " + html.EscapeString(publicText(loc.Title)) + "\n\n")
-		details.WriteString("Отправляя заявку, Вы разрешаете использовать указанные контактные данные для связи с Вами по этому обращению.")
+		details.WriteString("После отправки Вы получите номер обращения и сможете отслеживать его в разделе «Мои заявки».\n\nОтправляя заявку, Вы разрешаете использовать указанные контактные данные для связи с Вами по этому обращению.")
 		return b.Send(ctx, chatID, details.String(), markup(
 			[]Button{callbackButton("📨 Отправить заявку", "lead:submit")},
 			[]Button{callbackButton("✏️ Изменить данные", "lead:edit"), callbackButton("🔄 Сменить локацию", "lead:change")},
@@ -497,7 +509,7 @@ func (b *Bot) submitLead(ctx context.Context, chatID int64, from user, d leadDra
 			log.Printf("Visitor %d status after application: %v", from.ID, err)
 		}
 	}
-	replyErr := b.Send(ctx, chatID, fmt.Sprintf("✅ <b>Ваша заявка №%04d успешно отправлена!</b>\n\nСпасибо за интерес к нашим локациям!\n\nМы получили Вашу заявку. Наш специалист свяжется с Вами по указанному номеру телефона, чтобы обсудить детали сотрудничества.", submitted.Number), markup([]Button{caseButton("📂 Моё обращение", submitted.Number)}, []Button{cabinetButton(), menuButton()}))
+	replyErr := b.Send(ctx, chatID, fmt.Sprintf("✅ <b>Заявка №%04d отправлена!</b>\n\n📍 <b>Локация:</b> %s\n📂 <b>Статус:</b> Новая заявка\n\nНаш специалист свяжется с Вами по указанному номеру телефона.\n\nСохраните номер обращения: в разделе «Мои заявки» можно следить за статусом и отправлять дополнения.", submitted.Number,html.EscapeString(publicText(loc.Title))), markup([]Button{caseButton("📂 Моё обращение", submitted.Number)}, []Button{cabinetButton(), menuButton()}))
 	// Persisted once, deliver individually to every ADMIN_IDS recipient.
 	// The customer confirmation is sent first so slow Telegram admin chats
 	// do not hold up the visible success response.

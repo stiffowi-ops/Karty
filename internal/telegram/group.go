@@ -439,7 +439,7 @@ func (b *Bot) groupDeepLink(start string) string {
 func (b *Bot) publishGroupPanel(ctx context.Context, chatID int64) error {
 	_,err:=b.call(ctx,"sendMessage",map[string]any{
 		"chat_id":chatID,
-		"text":"📍 <b>Помощник по локациям</b>\n\nНайдите интересующую локацию, посмотрите подробности, сохраните её в избранное или оставьте заявку.",
+		"text":"🚀 <b>Новые точки роста для Вашего бизнеса</b>\n\nНайдите перспективную локацию для развития Вашего бизнеса. Изучайте предложения, сравнивайте варианты и выбирайте новые точки роста!",
 		"parse_mode":"HTML",
 		"reply_markup":markup([]Button{callbackButton("📍 Позвать помощника","grp:menu")}),
 	})

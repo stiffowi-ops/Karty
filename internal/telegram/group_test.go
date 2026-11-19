@@ -19,6 +19,10 @@ func TestGroupPanelAndPrivateMenuIsolation(t *testing.T) {
 	if len(tr.calls)!=1||tr.calls[0]!="/botTEST/sendMessage" {t.Fatalf("admin panel missing: %v",tr.calls)}
 	panel:=tr.payload
 	if _,ephemeral:=panel["ephemeral_message_parameters"];ephemeral{t.Fatal("admin panel must be public")}
+	panelText,ok:=panel["text"].(string)
+	if !ok || !strings.Contains(panelText,"Новые точки роста для Вашего бизнеса") || !strings.Contains(panelText,"Найдите перспективную локацию для развития Вашего бизнеса") {
+		t.Fatalf("new group invitation missing: %q",panelText)
+	}
 	if err:=b.handle(ctx,update{Callback:&callbackQuery{
 		ID:"private-menu",Data:"grp:menu",From:user{ID:77},
 		Message:&message{MessageID:123,Chat:groupChat},

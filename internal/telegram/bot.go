@@ -64,6 +64,7 @@ type user struct {
 type chat struct {
 	ID   int64  `json:"id"`
 	Type string `json:"type"`
+	IsDirectMessages bool `json:"is_direct_messages"`
 }
 type geoPoint struct {
 	Latitude  float64 `json:"latitude"`
@@ -975,6 +976,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if m == nil { return nil }
 	if isGroupChat(m.Chat.Type) { return b.groupCommand(ctx, m) }
 	if m.Chat.Type != "private" { return nil }
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.Text)), "/channelpanel") {
+		return b.channelPanelCommand(ctx, m)
+	}
 	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
 		if err := b.receiveAdminBackup(ctx, m.Chat.ID, m.From.ID, m.Document.FileID, m.Document.FileSize); err != nil {
 			return b.Send(ctx, m.Chat.ID, "Не удалось загрузить архив. Проверьте формат и повторите попытку.", nil)

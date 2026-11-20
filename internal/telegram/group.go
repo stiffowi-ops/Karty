@@ -21,6 +21,7 @@ import (
 type groupScreenKey struct{}
 type groupScreen struct {
 	chatID int64
+	channel bool // Channel callbacks must use Bot API 10.4 callback-only ephemeral replies.
 	userID int64
 	callbackID string
 	ephemeralID int
@@ -42,6 +43,25 @@ func (b *Bot) sendGroupScreen(ctx context.Context, text string, keyboard any) er
 	target, ok := groupScreenFromContext(ctx)
 	if !ok { return errors.New("missing private group recipient") }
 	if keyboard == nil { keyboard = markup([]Button{callbackButton("🏠 Меню","grp:menu")}) }
+	// Channels do not support editEphemeralMessageText (it is supergroup-only).
+	// Bot API 10.4 allows callback-only ephemeral replies without chat_id or
+	// receiver_user_id; never fall back to a public channel message.
+	if target.channel {
+		if target.callbackID == "" {
+			return errors.New("channel private response requires a callback query")
+		}
+		params := map[string]any{"callback_query_id": target.callbackID}
+		if target.ephemeralID == 0 {
+			params["replace_callback_query_message"] = true
+		}
+		_, err := b.call(ctx, "sendMessage", map[string]any{
+			"text": text, "parse_mode": "HTML",
+			"link_preview_options": map[string]any{"is_disabled": true},
+			"reply_markup": keyboard,
+			"ephemeral_message_parameters": params,
+		})
+		return err
+	}
 	if target.ephemeralID > 0 && target.chatID != 0 {
 		_, err := b.call(ctx, "editEphemeralMessageText", map[string]any{
 			"chat_id": target.chatID,
@@ -486,9 +506,10 @@ func (b *Bot) groupMap(ctx context.Context) error {
 // legacy private navigators cannot edit shared cards or leak personal state.
 func (b *Bot) groupCallback(ctx context.Context, cb *callbackQuery) (bool,error) {
 	if cb==nil || cb.From.ID<=0 {return false,nil}
-	group:=cb.Message!=nil && isGroupChat(cb.Message.Chat.Type)
+	group:=cb.Message!=nil && isGroupChat(cb.Message.Chat.Type) && !cb.Message.Chat.IsDirectMessages
+	channel:=cb.Message!=nil && cb.Message.Chat.Type=="channel" && !cb.Message.Chat.IsDirectMessages
 	inlineOnly:=cb.Message==nil && cb.InlineMessageID!=""
-	if !group && !inlineOnly {return false,nil}
+	if !group && !channel && !inlineOnly {return false,nil}
 	if !strings.HasPrefix(cb.Data,"grp:") &&
 		!strings.HasPrefix(cb.Data,"fav:inline:") &&
 		!strings.HasPrefix(cb.Data,"inline:nav:") &&
@@ -505,8 +526,8 @@ func (b *Bot) groupCallback(ctx context.Context, cb *callbackQuery) (bool,error)
 		b.answerCallback(ctx,cb.ID)
 		return true,nil
 	}
-	target:=groupScreen{userID:cb.From.ID,callbackID:cb.ID}
-	if group {
+	target:=groupScreen{userID:cb.From.ID,callbackID:cb.ID,channel:channel}
+	if group || channel {
 		target.chatID=cb.Message.Chat.ID
 		target.ephemeralID=cb.Message.EphemeralMessageID
 	}

@@ -122,6 +122,7 @@ func parseSyncLocation(rows [][]string,sheet string)(catalog.Location,error){
  }
  if loc.Title==""{return loc,fmt.Errorf("лист «%s»: отсутствует название локации",sheet)}
  seenPositions:=map[int]bool{}
+ sectionOrders:=map[string]int{}
  for i:=16;i<len(rows);i++{
   row:=rows[i]
   if blankRow(row){continue}
@@ -139,12 +140,13 @@ func parseSyncLocation(rows [][]string,sheet string)(catalog.Location,error){
   enabled:=v==""||v=="да"||v=="yes"||v=="true"||v=="1"
   sectionID:=readValue(row,4)
   if sectionID==""{sectionID=fmt.Sprintf("section-%02d",position)}
+  sectionOrders[sectionID]=position
   loc.Sections=append(loc.Sections,catalog.CardSection{
    ID:sectionID,Title:title,Body:readValue(row,2),Enabled:enabled,
   })
   if len(loc.Sections)>15{return loc,fmt.Errorf("лист «%s»: максимум 15 разделов",sheet)}
  }
- sort.Slice(loc.Sections,func(i,j int)bool{return loc.Sections[i].ID<loc.Sections[j].ID})
+ sort.SliceStable(loc.Sections,func(i,j int)bool{return sectionOrders[loc.Sections[i].ID]<sectionOrders[loc.Sections[j].ID]})
  if err:=catalog.Revision(loc).Validate();err!=nil{return loc,fmt.Errorf("лист «%s»: %w",sheet,err)}
  return loc,nil
 }

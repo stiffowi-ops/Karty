@@ -199,6 +199,8 @@ func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,
  switch data{
  case "adm:xlsx:menu":
   session.AwaitingExcel=false;session.PendingExcel=nil
+  session.AwaitingCatalogSync=false;session.PendingCatalogSync=nil;session.PendingCatalogRemovals=nil
+  session.CatalogSyncFingerprint="";session.CatalogSyncDeleteConfirmed=false
   return true,b.showExcelMenu(ctx,chatID)
  case "adm:xlsx:template":
   raw,err:=templateWorkbook();if err!=nil{return true,err}
@@ -207,6 +209,8 @@ func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,
   raw,err:=exportWorkbook(b.store.List());if err!=nil{return true,err}
   return true,b.sendAdminDocument(ctx,chatID,raw,"Karty_Каталог_"+time.Now().UTC().Format("20060102")+".xlsx")
  case "adm:xlsx:upload":
+  session.AwaitingCatalogSync=false;session.PendingCatalogSync=nil;session.PendingCatalogRemovals=nil
+  session.CatalogSyncFingerprint="";session.CatalogSyncDeleteConfirmed=false
   session.AwaitingExcel=true;session.PendingExcel=nil
   return true,b.Send(ctx,chatID,"📥 <b>Загрузить Excel</b>\n\nПришлите XLSX-файл документом. Локации будут проверены и останутся неопубликованными до подтверждения. Координаты можно оставить пустыми.",markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))
  case "adm:xlsx:publish":

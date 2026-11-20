@@ -168,3 +168,26 @@ func (s *favoriteStore) write(data map[string][]string) error {
 	}
 	return os.Rename(tmp, s.path)
 }
+
+
+ // RemoveLocationEverywhere removes a deleted location from every user's
+ // favorites, without disturbing the rest of their saved selections.
+func (s *favoriteStore) RemoveLocationEverywhere(id string) error {
+ if s==nil || !catalog.ValidID(id){return errors.New("invalid favorite location")}
+ s.mu.Lock()
+ defer s.mu.Unlock()
+ next:=make(map[string][]string,len(s.byUser))
+ changed:=false
+ for user,ids:=range s.byUser {
+  kept:=make([]string,0,len(ids))
+  for _,saved:=range ids {
+   if saved==id{changed=true;continue}
+   kept=append(kept,saved)
+  }
+  if len(kept)>0{next[user]=kept}
+ }
+ if !changed{return nil}
+ if err:=s.write(next);err!=nil{return err}
+ s.byUser=next
+ return nil
+}

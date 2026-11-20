@@ -3,6 +3,7 @@ package telegram
 import (
  "context"
  "encoding/json"
+ "io"
  "net/http"
  "strings"
  "testing"
@@ -59,7 +60,7 @@ func (tr *channelPanelTransport) RoundTrip(r *http.Request)(*http.Response,error
    body=`{"ok":true,"result":{"message_id":123}}`
   }else {body=`{"ok":true,"result":{"message_id":124}}`}
  }
- return &http.Response{StatusCode:200,Header:http.Header{"Content-Type":[]string{"application/json"}},Body:strings.NewReader(body)},nil
+ return &http.Response{StatusCode:200,Header:http.Header{"Content-Type":[]string{"application/json"}},Body:io.NopCloser(strings.NewReader(body))},nil
 }
 func TestAdminChannelPanelPublishesAndPins(t *testing.T){
  b,_:=makeInlineTestBot(t)

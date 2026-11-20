@@ -187,7 +187,7 @@ func sheetData(rows [][]string)[]byte{
 // Write creates an Excel workbook without third-party dependencies. All user
 // content is explicitly typed as text, preventing formula injection on export.
 func Write(sheets []Sheet)([]byte,error){
- if len(sheets)<1||len(sheets)>5{return nil,errors.New("неверное число листов")}
+ if len(sheets)<1||len(sheets)>750{return nil,errors.New("неверное число листов")}
  var out bytes.Buffer
  zw:=zip.NewWriter(&out)
  add:=func(name string,body []byte)error{
@@ -216,4 +216,29 @@ func Write(sheets []Sheet)([]byte,error){
  if e:=add("xl/styles.xml",[]byte(`<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF126782"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>`));e!=nil{return nil,e}
  if e:=zw.Close();e!=nil{return nil,e}
  return out.Bytes(),nil
+}
+
+
+ // SheetNames returns all worksheet names in workbook order so a complete
+ // catalog export can contain one dedicated sheet for each location.
+func SheetNames(data []byte)([]string,error){
+ if len(data)==0||len(data)>MaxFileSize{return nil,errors.New("XLSX слишком большой (максимум 5 МБ)")}
+ zr,err:=zip.NewReader(bytes.NewReader(data),int64(len(data)));if err!=nil{return nil,err}
+ for _,file:=range zr.File{
+  if file.Name!="xl/workbook.xml"{continue}
+  raw,err:=readEntry(file,MaxInflatedSize);if err!=nil{return nil,err}
+  var wb workbook
+  if err=xml.Unmarshal(raw,&wb);err!=nil{return nil,err}
+  if len(wb.Sheets)==0||len(wb.Sheets)>750{return nil,errors.New("некорректное число листов Excel")}
+  names:=make([]string,0,len(wb.Sheets))
+  seen:=map[string]bool{}
+  for _,sh:=range wb.Sheets{
+   key:=strings.ToLower(sh.Name)
+   if strings.TrimSpace(sh.Name)==""||seen[key]{return nil,errors.New("пустое или повторяющееся имя вкладки")}
+   seen[key]=true
+   names=append(names,sh.Name)
+  }
+  return names,nil
+ }
+ return nil,errors.New("XLSX не содержит книгу xl/workbook.xml")
 }

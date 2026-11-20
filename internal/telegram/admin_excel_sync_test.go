@@ -35,9 +35,10 @@ func TestFullCatalogSheetRoundtripAndCustomSections(t *testing.T){
  removedID:=sheets[2].Rows[1][1]
  sheets=append(sheets[:2],sheets[3:]...)
  newSheet:=locationSheet(preview.Desired[0])
+ newSheet=newSheet[:16]
  newSheet[1][1]=""
  newSheet[2][1]="Новая точка синхронизации 2026"
- newSheet[16]=[]string{"1","📦 Индивидуальная категория","Новое содержание","Нет"}
+ newSheet=append(newSheet,[]string{"1","📦 Индивидуальная категория","Новое содержание","Нет"})
  sheets=append(sheets,xlsx.Sheet{Name:"НОВАЯ_ТОЧКА",Rows:newSheet})
  modified,err:=xlsx.Write(sheets);if err!=nil{t.Fatal(err)}
  result,err:=parseFullCatalog(modified,b.store);if err!=nil{t.Fatal(err)}

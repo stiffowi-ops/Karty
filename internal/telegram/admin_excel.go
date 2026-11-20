@@ -186,11 +186,14 @@ func (b *Bot) showExcelMenu(ctx context.Context,chatID int64)error{
   []Button{callbackButton("📄 Скачать шаблон","adm:xlsx:template")},
   []Button{callbackButton("📥 Загрузить Excel","adm:xlsx:upload")},
   []Button{callbackButton("📤 Экспорт каталога","adm:xlsx:export")},
+  []Button{callbackButton("📚 Скачать полный каталог · 1 вкладка = 1 локация","adm:xlsx:sync:export")},
+  []Button{callbackButton("🔄 Полная синхронизация","adm:xlsx:sync:upload")},
   []Button{callbackButton("⬅️ К локациям","adm:locations:0")},
  ))
 }
 func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,data string)(bool,error){
  if !strings.HasPrefix(data,"adm:xlsx:"){return false,nil}
+ if handled,err:=b.handleFullSyncCallback(ctx,chatID,userID,data);handled{return true,err}
  if !b.isAdmin(userID)||chatID!=userID{return true,nil}
  session:=b.adminSession(userID)
  switch data{
@@ -221,6 +224,7 @@ func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,
 func (b *Bot) receiveLocationExcel(ctx context.Context,m *message)error{
  if m.Document==nil{return nil}
  session:=b.adminSession(m.From.ID)
+ if session.AwaitingCatalogSync {return b.receiveFullSyncExcel(ctx,m)}
  if !strings.HasSuffix(strings.ToLower(m.Document.FileName),".xlsx"){
   return b.Send(ctx,m.Chat.ID,"Нужен файл с расширением .xlsx.",nil)
  }

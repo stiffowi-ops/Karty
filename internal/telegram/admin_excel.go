@@ -1,13 +1,13 @@
 package telegram
 
 import (
- "bytes"
  "context"
  "encoding/json"
  "errors"
  "fmt"
  "html"
  "io"
+ "math"
  "net/http"
  "net/url"
  "sort"
@@ -94,7 +94,7 @@ func parseCoordinate(s string, low,high float64)(*float64,error){
  if s==""{return nil,nil}
  if strings.Contains(s,","){s=strings.ReplaceAll(s,",",".")}
  val,err:=strconv.ParseFloat(s,64)
- if err!=nil||val<low||val>high{return nil,errors.New("некорректные координаты")}
+ if err!=nil||math.IsNaN(val)||math.IsInf(val,0)||val<low||val>high{return nil,errors.New("некорректные координаты")}
  return &val,nil
 }
 func parseImport(data []byte,store *catalog.Store)([]catalog.Location,error){
@@ -245,4 +245,3 @@ func validateWorkbookRoundtrip(data []byte)error{
  _,err:=xlsx.Read(data,importLocationsSheet,importSectionsSheet)
  return err
 }
-var _ = bytes.MinRead

@@ -298,7 +298,7 @@ func (b *Bot) permanentlyDeleteAdminLocation(ctx context.Context, chatID,userID 
  if err!=nil {return b.Send(ctx,chatID,"❌ Не удалось выполнить удаление полностью: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("📍 Локации","adm:locations:0")}))}
  session.Field=""
  session.LocationID=""
- return b.Send(ctx,chatID,"✅ <b>Локация окончательно удалена.</b>\\n\\nКарточка и редактируемые данные удалены из рабочего каталога. Восстановление через интерфейс недоступно. Исторические заявки остаются.",markup([]Button{callbackButton("📍 К локациям","adm:locations:0")}))
+ return b.Send(ctx,chatID,"✅ <b>Локация окончательно удалена.</b>\n\nКарточка и редактируемые данные удалены из рабочего каталога. Восстановление через интерфейс недоступно. Исторические заявки остаются.",markup([]Button{callbackButton("📍 К локациям","adm:locations:0")}))
 }
 
 // A new location is an unpublished draft until the administrator confirms it.

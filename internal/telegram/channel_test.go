@@ -19,7 +19,7 @@ func TestChannelCallbackPrivateMenuAndNavigation(t *testing.T) {
   if len(tr.calls)!=2 || tr.calls[0]!="/botTEST/answerCallbackQuery" || tr.calls[1]!="/botTEST/sendMessage" {t.Fatalf("%s: wrong calls %v",action,tr.calls)}
   if _,hasChat:=tr.payload["chat_id"];hasChat {t.Fatalf("%s: leaked into public channel: %+v",action,tr.payload)}
   params,ok:=tr.payload["ephemeral_message_parameters"].(map[string]any)
-  if !ok || params["callback_query_id"]!="channel-callback" || params["receiver_user_id"]!=nil || params["replace_callback_query_message"]!=true {t.Fatalf("%s: unsafe params %+v",action,tr.payload)}
+  if !ok || params["callback_query_id"]!="channel-callback" || params["receiver_user_id"]!=nil || params["replace_callback_query_message"]!=nil {t.Fatalf("%s: unsafe params %+v",action,tr.payload)}
  }
 }
 func TestChannelPersonalFavoriteSeparated(t *testing.T){
@@ -39,7 +39,7 @@ func TestChannelEphemeralCallbackDoesNotEditSupergroupMessage(t *testing.T){
  if tr.calls[len(tr.calls)-1]!="/botTEST/sendMessage"{t.Fatalf("channel edit attempted: %v",tr.calls)}
  if _,ok:=tr.payload["chat_id"];ok{t.Fatal("channel chat ID exposed")}
  params:=tr.payload["ephemeral_message_parameters"].(map[string]any)
- if params["replace_callback_query_message"]!=nil{t.Fatal("must not replace ephemeral callback")}
+ if params["replace_callback_query_message"]!=nil{t.Fatal("must not replace any channel callback message")}
 }
 type channelPanelTransport struct {
  calls []string

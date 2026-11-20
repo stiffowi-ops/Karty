@@ -357,13 +357,17 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 			return path, err
 		}
 		for id, l := range uploaded {
-			custom[id] = l
+            if !currentDeleted[id] {custom[id] = l}
 		}
 	}
+    // An earlier backup must never recreate a permanently purged custom
+    // definition, even as a hidden runtime record.
+    for id := range currentDeleted {delete(custom,id)}
 	if err := catalog.ValidateAdminLocations(custom); err != nil {
 		return path, err
 	}
 	for id := range archived {
+        if currentDeleted[id] {continue}
 		if catalog.IsAdminLocationID(id) {
 			if _, found := custom[id]; !found {
 				return path, fmt.Errorf("в архиве отсутствует новая локация %s", id)
@@ -372,10 +376,12 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 	}
 	revisions := map[string]catalog.CardRevision{}
 	for _, loc := range locations {
+        if currentDeleted[loc.ID] {continue}
 		revisions[loc.ID] = catalog.Revision(loc)
 	}
 	for id, loc := range currentIDs {
 		if catalog.IsAdminLocationID(id) {
+			if currentDeleted[id] {continue}
 			if _, inArchive := revisions[id]; !inArchive {
 				revisions[id] = catalog.Revision(loc)
 			}

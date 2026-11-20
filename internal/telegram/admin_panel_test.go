@@ -145,21 +145,26 @@ func TestAdminBackupExportIsZIPDocument(t *testing.T) {
 	}
 }
 
-func TestAdminDeleteLocationRequiresConfirmationAndCreatesBackups(t *testing.T) {
-	b,tr:=makeAdminTestBot(t)
-	ctx:=context.Background()
-	nonAdmin:=user{ID:101}
-	admin:=user{ID:100}
-	if err:=b.handleAdminCallback(ctx,101,nonAdmin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
-	if _,ok:=b.store.Find("020");!ok{t.Fatal("non-admin deleted location")}
-	if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteask:020");err!=nil{t.Fatal(err)}
-	if _,ok:=b.store.Find("020");!ok{t.Fatal("confirmation prompt deleted location")}
-	if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
-	if _,ok:=b.store.Find("020");ok{t.Fatal("location still visible after delete")}
-	entries,err:=os.ReadDir(b.autoBackupDirectory())
-	if err!=nil{t.Fatal(err)}
-	if len(entries)!=2{t.Fatalf("expected protective + post-change ZIPs, got %d",len(entries))}
-	if err=b.handleAdminCallback(ctx,100,admin,"adm:restorelocapply:020");err!=nil{t.Fatal(err)}
-	if _,ok:=b.store.Find("020");!ok{t.Fatal("location not restored")}
-	if len(tr.calls)==0{t.Fatal("admin got no feedback")}
+func TestAdminDeleteLocationRequiresConfirmationAndDoesNotExposeTrash(t *testing.T) {
+ b,tr:=makeAdminTestBot(t)
+ ctx:=context.Background()
+ nonAdmin:=user{ID:101}
+ admin:=user{ID:100}
+ if err:=b.handleAdminCallback(ctx,101,nonAdmin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
+ if _,ok:=b.store.Find("020");!ok{t.Fatal("non-admin deleted location")}
+ if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
+ if _,ok:=b.store.Find("020");!ok{t.Fatal("unconfirmed deletion")}
+ if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteask:020");err!=nil{t.Fatal(err)}
+ if _,ok:=b.store.Find("020");!ok{t.Fatal("confirmation prompt deleted location")}
+ if err:=b.handleAdminCallback(ctx,100,admin,"adm:deleteapply:020");err!=nil{t.Fatal(err)}
+ if _,ok:=b.store.Find("020");ok{t.Fatal("location still visible after delete")}
+ entries,err:=os.ReadDir(b.autoBackupDirectory())
+ if err!=nil && !os.IsNotExist(err){t.Fatal(err)}
+ if len(entries)!=0{t.Fatalf("permanent deletion must not create copies: %d",len(entries))}
+ if err=b.handleAdminCallback(ctx,100,admin,"adm:restorelocapply:020");err!=nil{t.Fatal(err)}
+ if _,ok:=b.store.Find("020");ok{t.Fatal("removed location restored")}
+ if err=b.showAdminLocations(ctx,100,0);err!=nil{t.Fatal(err)}
+ _,markup:=lastAdminMessage(t,tr)
+ if strings.Contains(markup,"adm:deleted:")||strings.Contains(markup,"restoreloc"){t.Fatalf("trash controls remain: %s",markup)}
+ if len(tr.calls)==0{t.Fatal("admin got no feedback")}
 }

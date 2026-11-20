@@ -979,7 +979,7 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.Text)), "/channelpanel") {
 		return b.channelPanelCommand(ctx, m)
 	}
-	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingExcel {
+	if m.Document != nil && b.isAdmin(m.From.ID) && (b.adminSession(m.From.ID).AwaitingExcel || b.adminSession(m.From.ID).AwaitingCatalogSync) {
 		return b.receiveLocationExcel(ctx, m)
 	}
 	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {

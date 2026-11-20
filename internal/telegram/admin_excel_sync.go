@@ -61,13 +61,13 @@ func locationSheet(loc catalog.Location)[][]string{
   {"ВАЖНО","Удаление листа означает окончательное удаление локации после подтверждения"},
   {"",""},
   {"НАСТРАИВАЕМЫЕ РАЗДЕЛЫ","От 0 до 15. Название, порядок и текст произвольные."},
-  {"Порядок","Название раздела","Текст раздела","Показывать (Да/Нет)"},
+  {"Порядок","Название раздела","Текст раздела","Показывать (Да/Нет)","ID раздела (не менять)"},
  }
  if loc.Latitude!=nil{rows[8][1]=strconv.FormatFloat(*loc.Latitude,'f',-1,64)}
  if loc.Longitude!=nil{rows[9][1]=strconv.FormatFloat(*loc.Longitude,'f',-1,64)}
  for i,sec:=range catalog.Revision(loc).Sections{
   enabled:="Да";if !sec.Enabled{enabled="Нет"}
-  rows=append(rows,[]string{strconv.Itoa(i+1),sec.Title,sec.Body,enabled})
+  rows=append(rows,[]string{strconv.Itoa(i+1),sec.Title,sec.Body,enabled,sec.ID})
  }
  return rows
 }
@@ -137,8 +137,10 @@ func parseSyncLocation(rows [][]string,sheet string)(catalog.Location,error){
    return loc,fmt.Errorf("лист «%s», строка %d: показывать = Да или Нет",sheet,i+1)
   }
   enabled:=v==""||v=="да"||v=="yes"||v=="true"||v=="1"
+  sectionID:=readValue(row,4)
+  if sectionID==""{sectionID=fmt.Sprintf("section-%02d",position)}
   loc.Sections=append(loc.Sections,catalog.CardSection{
-   ID:fmt.Sprintf("section-%02d",position),Title:title,Body:readValue(row,2),Enabled:enabled,
+   ID:sectionID,Title:title,Body:readValue(row,2),Enabled:enabled,
   })
   if len(loc.Sections)>15{return loc,fmt.Errorf("лист «%s»: максимум 15 разделов",sheet)}
  }

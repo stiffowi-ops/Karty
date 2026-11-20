@@ -33,6 +33,11 @@ type adminSession struct {
 	AwaitingBackup   bool
 	AwaitingExcel    bool
 	PendingExcel     []catalog.Location
+	AwaitingCatalogSync bool
+	PendingCatalogSync []catalog.Location
+	PendingCatalogRemovals []string
+	CatalogSyncFingerprint string
+	CatalogSyncDeleteConfirmed bool
 	StatsMetric      string
 	StatsDays        int
 	HistoryLocation  string

@@ -182,9 +182,7 @@ func (b *Bot) getXLSX(ctx context.Context,fileID string,size int64)([]byte,error
  return data,nil
 }
 func (b *Bot) showExcelMenu(ctx context.Context,chatID int64)error{
- return b.Send(ctx,chatID,"📊 <b>Excel и локации</b>
-
-Скачайте шаблон, заполните локации и произвольные разделы, затем отправьте файл в личный чат бота. Координаты необязательны. Перед публикацией будет проверка и подтверждение.",markup(
+ return b.Send(ctx,chatID,"📊 <b>Excel и локации</b>\n\nСкачайте шаблон, заполните локации и произвольные разделы, затем отправьте файл в личный чат бота. Координаты необязательны. Перед публикацией будет проверка и подтверждение.",markup(
   []Button{callbackButton("📄 Скачать шаблон","adm:xlsx:template")},
   []Button{callbackButton("📥 Загрузить Excel","adm:xlsx:upload")},
   []Button{callbackButton("📤 Экспорт каталога","adm:xlsx:export")},
@@ -207,9 +205,7 @@ func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,
   return true,b.sendAdminDocument(ctx,chatID,raw,"Karty_Каталог_"+time.Now().UTC().Format("20060102")+".xlsx")
  case "adm:xlsx:upload":
   session.AwaitingExcel=true;session.PendingExcel=nil
-  return true,b.Send(ctx,chatID,"📥 <b>Загрузить Excel</b>
-
-Пришлите XLSX-файл документом. Локации будут проверены и останутся неопубликованными до подтверждения. Координаты можно оставить пустыми.",markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))
+  return true,b.Send(ctx,chatID,"📥 <b>Загрузить Excel</b>\n\nПришлите XLSX-файл документом. Локации будут проверены и останутся неопубликованными до подтверждения. Координаты можно оставить пустыми.",markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))
  case "adm:xlsx:publish":
   if len(session.PendingExcel)==0{return true,b.showExcelMenu(ctx,chatID)}
   b.backupMu.Lock()
@@ -218,9 +214,7 @@ func (b *Bot) handleExcelCallback(ctx context.Context,chatID int64,userID int64,
   if err!=nil{return true,b.Send(ctx,chatID,"❌ Импорт не выполнен: "+html.EscapeString(err.Error()),markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))}
   count:=len(session.PendingExcel)
   session.PendingExcel=nil
-  return true,b.Send(ctx,chatID,fmt.Sprintf("✅ <b>Опубликовано локаций: %d</b>
-
-Карточки доступны в каталоге. Разделы и координаты сохранены.",count),markup([]Button{callbackButton("📍 Все локации","adm:locations:0")}))
+  return true,b.Send(ctx,chatID,fmt.Sprintf("✅ <b>Опубликовано локаций: %d</b>\n\nКарточки доступны в каталоге. Разделы и координаты сохранены.",count),markup([]Button{callbackButton("📍 Все локации","adm:locations:0")}))
  }
  return true,b.showExcelMenu(ctx,chatID)
 }
@@ -233,27 +227,15 @@ func (b *Bot) receiveLocationExcel(ctx context.Context,m *message)error{
  data,err:=b.getXLSX(ctx,m.Document.FileID,m.Document.FileSize)
  if err!=nil{return b.Send(ctx,m.Chat.ID,"❌ Не удалось скачать Excel: "+html.EscapeString(err.Error()),nil)}
  items,err:=parseImport(data,b.store)
- if err!=nil{return b.Send(ctx,m.Chat.ID,"❌ <b>Ошибка проверки Excel</b>
-
-"+html.EscapeString(err.Error())+"
-
-Исправьте файл и отправьте повторно. Ничего не опубликовано.",markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))
+ if err!=nil{return b.Send(ctx,m.Chat.ID,"❌ <b>Ошибка проверки Excel</b>\n\n"+html.EscapeString(err.Error())+"\n\nИсправьте файл и отправьте повторно. Ничего не опубликовано.",markup([]Button{callbackButton("❌ Отмена","adm:xlsx:menu")}))
  }
  session.AwaitingExcel=false
  session.PendingExcel=items
  names:=make([]string,0,min(len(items),5))
  for _,item:=range items[:min(len(items),5)]{names=append(names,"• "+html.EscapeString(item.Title))}
  more:=""
- if len(items)>5{more=fmt.Sprintf("
-... и ещё %d",len(items)-5)}
- return b.Send(ctx,m.Chat.ID,fmt.Sprintf("✅ <b>Excel проверен</b>
-
-Локаций: %d
-
-%s%s
-
-Подтвердить публикацию? Существующие карточки не меняются.",len(items),strings.Join(names,"
-"),more),markup(
+ if len(items)>5{more=fmt.Sprintf("\n... и ещё %d",len(items)-5)}
+ return b.Send(ctx,m.Chat.ID,fmt.Sprintf("✅ <b>Excel проверен</b>\n\nЛокаций: %d\n\n%s%s\n\nПодтвердить публикацию? Существующие карточки не меняются.",len(items),strings.Join(names,"\n"),more),markup(
   []Button{callbackButton("✅ Опубликовать всё","adm:xlsx:publish")},
   []Button{callbackButton("❌ Отмена","adm:xlsx:menu")},
  ))

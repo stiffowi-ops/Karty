@@ -7,7 +7,6 @@ import (
  "errors"
  "fmt"
  "os"
- "strings"
 )
 
 // CatalogFingerprint identifies the exact visible catalog used to produce an
@@ -42,7 +41,6 @@ func (s *Store) ApplyCatalogSync(desired []Location, removals []string, expected
   if _,ok:=active[id];!ok{return fmt.Errorf("локация %s уже отсутствует в каталоге",id)}
   removed[id]=true
  }
- newIDs:=map[string]bool{}
  desiredIDs:=map[string]bool{}
  custom,err:=ReadAdminLocations(s.AdminLocationsPath());if err!=nil{return err}
  revisions,err:=s.adminCardsOnDisk();if err!=nil{return err}
@@ -61,7 +59,6 @@ func (s *Store) ApplyCatalogSync(desired []Location, removals []string, expected
   if !exists && !IsAdminLocationID(loc.ID){return fmt.Errorf("новая локация %s должна иметь ID custom-",loc.ID)}
   if !exists {
    if _,found:=custom[loc.ID];found{return fmt.Errorf("новый ID %s уже занят",loc.ID)}
-   newIDs[loc.ID]=true
   }
   if IsAdminLocationID(loc.ID){
    if exists {
@@ -129,6 +126,5 @@ func (s *Store) ApplyCatalogSync(desired []Location, removals []string, expected
   rollback(len(changes))
   return errors.New("контроль количества локаций не пройден; синхронизация отменена")
  }
- _=newIDs
  return nil
 }

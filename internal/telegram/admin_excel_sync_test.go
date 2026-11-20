@@ -5,6 +5,7 @@ import (
  "testing"
 
  "locationbot/internal/xlsx"
+ "locationbot/internal/catalog"
 )
 
 func fullSyncTestSheets(t *testing.T, data []byte)[]xlsx.Sheet{
@@ -17,6 +18,7 @@ func fullSyncTestSheets(t *testing.T, data []byte)[]xlsx.Sheet{
 }
 func TestFullCatalogSheetRoundtripAndCustomSections(t *testing.T){
  b,_:=makeAdminTestBot(t)
+ if err:=b.store.CreateAdminLocation(catalog.Location{ID:"custom-aabbccddeeff1122",Title:"Тестовая дополнительная точка",Sections:[]catalog.CardSection{}});err!=nil{t.Fatal(err)}
  initial:=b.store.List()
  raw,err:=exportFullCatalog(b.store);if err!=nil{t.Fatal(err)}
  sheets:=fullSyncTestSheets(t,raw)

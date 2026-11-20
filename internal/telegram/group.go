@@ -50,10 +50,11 @@ func (b *Bot) sendGroupScreen(ctx context.Context, text string, keyboard any) er
 		if target.callbackID == "" {
 			return errors.New("channel private response requires a callback query")
 		}
+		// Do NOT replace the public post in-place. Telegram shows such a
+		// replacement with the channel post's public styling/views, which
+		// makes a private menu appear public. Always show a separate
+		// ephemeral reply with the visible "Only visible to you" label.
 		params := map[string]any{"callback_query_id": target.callbackID}
-		if target.ephemeralID == 0 {
-			params["replace_callback_query_message"] = true
-		}
 		_, err := b.call(ctx, "sendMessage", map[string]any{
 			"text": text, "parse_mode": "HTML",
 			"link_preview_options": map[string]any{"is_disabled": true},

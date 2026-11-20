@@ -88,7 +88,7 @@ func Read(data []byte, required ...string)(map[string][][]string,error){
  var inflated uint64
  for _,f:=range zr.File {
   name:=path.Clean(strings.TrimPrefix(f.Name,"/"))
-  if strings.HasPrefix(name,"../")||name==".."||strings.Contains(name,"\"){return nil,errors.New("некорректная структура XLSX")}
+  if strings.HasPrefix(name,"../")||name==".."||strings.Contains(name,`\\`){return nil,errors.New("некорректная структура XLSX")}
   if f.UncompressedSize64>MaxInflatedSize{return nil,errors.New("слишком большой лист Excel")}
   inflated+=f.UncompressedSize64
   if inflated>MaxInflatedSize{return nil,errors.New("слишком большой XLSX")}

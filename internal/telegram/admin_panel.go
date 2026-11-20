@@ -31,6 +31,8 @@ type adminSession struct {
 	Backup           adminbackup.Archive
 	HasBackup        bool
 	AwaitingBackup   bool
+	AwaitingExcel    bool
+	PendingExcel     []catalog.Location
 	StatsMetric      string
 	StatsDays        int
 	HistoryLocation  string
@@ -281,6 +283,7 @@ func (b *Bot) showAdminLocations(ctx context.Context, chatID int64, page int) er
 		rows = append(rows, nav)
 	}
 	rows = append(rows, []Button{callbackButton("🔎 Найти локацию", "adm:locsearch"), callbackButton("➕ Добавить локацию", "adm:new")})
+	rows = append(rows, []Button{callbackButton("📊 Excel: импорт и экспорт", "adm:xlsx:menu")})
 		rows = append(rows, []Button{callbackButton("⬅️ Админ-панель", "adm:menu")})
 	return b.Send(ctx, chatID, fmt.Sprintf("📍 <b>Редактор локаций</b>\nСтраница %d из %d. Выберите карточку для редактирования:", page+1, pages), markup(rows...))
 }
@@ -1020,6 +1023,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID int64, from user, 
 		return nil
 	}
 	session := b.adminSession(from.ID)
+	if handled, err := b.handleExcelCallback(ctx, chatID, from.ID, data); handled {return err}
 	if handled, err := b.handleAdminCleanup(ctx, chatID, from.ID, data); handled {
 		return err
 	}

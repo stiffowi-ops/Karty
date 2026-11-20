@@ -979,6 +979,9 @@ func (b *Bot) handle(ctx context.Context, u update) error {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.Text)), "/channelpanel") {
 		return b.channelPanelCommand(ctx, m)
 	}
+	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingExcel {
+		return b.receiveLocationExcel(ctx, m)
+	}
 	if m.Document != nil && b.isAdmin(m.From.ID) && b.adminSession(m.From.ID).AwaitingBackup {
 		if err := b.receiveAdminBackup(ctx, m.Chat.ID, m.From.ID, m.Document.FileID, m.Document.FileSize); err != nil {
 			return b.Send(ctx, m.Chat.ID, "Не удалось загрузить архив. Проверьте формат и повторите попытку.", nil)

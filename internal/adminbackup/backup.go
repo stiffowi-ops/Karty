@@ -367,6 +367,7 @@ func Restore(root string, archive Archive, mode string, current []catalog.Locati
 		return path, err
 	}
 	for id := range archived {
+        if currentDeleted[id] {continue}
 		if catalog.IsAdminLocationID(id) {
 			if _, found := custom[id]; !found {
 				return path, fmt.Errorf("в архиве отсутствует новая локация %s", id)
